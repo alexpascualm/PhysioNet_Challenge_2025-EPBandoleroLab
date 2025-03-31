@@ -37,7 +37,6 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 # 1. Configuración inicial
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Usando dispositivo: {device}\n")
 
 # 2. Generación de datos de ejemplo 
 # X = dataset_signals
@@ -196,6 +195,8 @@ def train_and_evaluate(X, y):
     print("Matriz de Confusión:")
     print(confusion_matrix(test_labels, test_preds))
     
+    return model
+    
 
 #############################################################################################################################################
 
@@ -231,13 +232,15 @@ def train_model(data_folder, model_folder, verbose):
 
         record = os.path.join(data_folder, records[i])
 
-        features[i] = extract_features(record)
-
         labels[i] = load_label(record)
 
         signal_data = load_signals(record)
+        if i == 0:
+            print(record)
+            print(signal_data)
+
         signal = signal_data[0]
-        signal = pad_columns(signal)
+        signal = Zero_pad_leads(signal)
         signals.append(signal)
 
     # Train the models.
@@ -245,7 +248,7 @@ def train_model(data_folder, model_folder, verbose):
         print('Training the model on the data...')
 
     signals = np.stack(signals, axis=0)
-    print(signals.shape)
+    
 
     print(labels.shape)
 
@@ -345,7 +348,7 @@ def save_model(model_folder, model):
     joblib.dump(d, filename, protocol=0)
 
 
-def pad_columns(arr, target_length=4096):
+def Zero_pad_leads(arr, target_length=4096):
     X, Y = arr.shape  # X filas, 12 columnas
     padded_array = np.zeros((target_length, Y))  # Matriz destino con ceros
     
