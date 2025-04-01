@@ -12,10 +12,18 @@
 import joblib
 import numpy as np
 import os
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-import sys
 
 from helper_code import *
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+
+import random
+from collections import Counter
 
 ################################################################################
 #
@@ -23,26 +31,7 @@ from helper_code import *
 #
 ################################################################################
 
-
-#################################################################################################################################
-import torch
-
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, TensorDataset
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
-
-# 1. Configuración inicial
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# 2. Generación de datos de ejemplo 
-# X = dataset_signals
-# y = dataset_labels
-
-# 3. Clase Dataset con preprocesamiento
+# 1. Clase Dataset con preprocesamiento
 class ECGDataset(Dataset):
     def __init__(self, X, y, augment=True):
         self.X = X
@@ -70,7 +59,7 @@ class ECGDataset(Dataset):
                 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
 
-# 4. Arquitectura del modelo
+# 2. Arquitectura del modelo
 class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
@@ -121,21 +110,24 @@ class ChagasClassifier(nn.Module):
     
 
 
-# 5. Función de entrenamiento y evaluación
-def train_and_evaluate(X, y):
+# 3. Función de entrenamiento y evaluación
+def train_and_save_model(X, y, model_folder):
+
+    # Configuración inicial
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # Split de datos
-    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
     
     # Crear datasets
     train_dataset = ECGDataset(X_train, y_train)
     val_dataset = ECGDataset(X_val, y_val, augment=False)
-    test_dataset = ECGDataset(X_test, y_test, augment=False)
+    
     
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=32)
-    test_loader = DataLoader(test_dataset, batch_size=32)
+    
     
     # Inicializar modelo
     model = ChagasClassifier().to(device)
@@ -145,6 +137,7 @@ def train_and_evaluate(X, y):
     # Entrenamiento
     best_val_acc = 0
     for epoch in range(50):
+        print(epoch)
         # Modo entrenamiento
         model.train()
         for inputs, labels in train_loader:
@@ -175,27 +168,7 @@ def train_and_evaluate(X, y):
         # Early stopping
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(model.state_dict(), 'best_model.pth')
-    
-    # Evaluación final
-    model.load_state_dict(torch.load('best_model.pth'))
-    model.eval()
-    test_preds = []
-    test_labels = []
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
-            preds = torch.sigmoid(outputs) > 0.5
-            test_preds.extend(preds.cpu().numpy())
-            test_labels.extend(labels.cpu().numpy())
-    
-    print("\n--- Resultados Finales en Test ---")
-    print(classification_report(test_labels, test_preds, target_names=['No Chagas', 'Chagas']))
-    print("Matriz de Confusión:")
-    print(confusion_matrix(test_labels, test_preds))
-    
-    return model
+            torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
     
 
 #############################################################################################################################################
@@ -210,7 +183,9 @@ def train_model(data_folder, model_folder, verbose):
     if verbose:
         print('Finding the Challenge data...')
 
-    records = find_records(data_folder)
+    
+    records = balance_records(data_folder)
+    
     num_records = len(records)
 
     if num_records == 0:
@@ -220,7 +195,6 @@ def train_model(data_folder, model_folder, verbose):
     if verbose:
         print('Extracting features and labels from the data...')
 
-    features = np.zeros((num_records, 6), dtype=np.float64)
     labels = np.zeros(num_records, dtype=bool)
     signals = []
 
@@ -230,16 +204,15 @@ def train_model(data_folder, model_folder, verbose):
             width = len(str(num_records))
             print(f'- {i+1:>{width}}/{num_records}: {records[i]}...')
 
-        record = os.path.join(data_folder, records[i])
+        # record = os.path.join(data_folder, records[i])
+        record = records[i]
 
         labels[i] = load_label(record)
 
         signal_data = load_signals(record)
-        if i == 0:
-            print(record)
-            print(signal_data)
 
         signal = signal_data[0]
+
         signal = Zero_pad_leads(signal)
         signals.append(signal)
 
@@ -249,97 +222,66 @@ def train_model(data_folder, model_folder, verbose):
 
     signals = np.stack(signals, axis=0)
     
-
     print(labels.shape)
-
-
-    model = ChagasClassifier()
-
-
-
-    # # This very simple model trains a random forest model with very simple features.
-
-    # # Define the parameters for the random forest classifier and regressor.
-    # n_estimators = 12  # Number of trees in the forest.
-    # max_leaf_nodes = 34  # Maximum number of leaf nodes in each tree.
-    # random_state = 56  # Random state; set for reproducibility.
-
-    # # Fit the model.
-
-    # model = RandomForestClassifier(
-    #     n_estimators=n_estimators, max_leaf_nodes=max_leaf_nodes, random_state=random_state).fit(features, labels)
 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    # Save the model.
-    save_model(model_folder, model)
-
+    train_and_save_model(signals,labels,model_folder)
+    
     if verbose:
         print('Done.')
         print()
 
+
+
 # Load your trained models. This function is *required*. You should edit this function to add your code, but do *not* change the
 # arguments of this function. If you do not train one of the models, then you can return None for the model.
 def load_model(model_folder, verbose):
-    model_filename = os.path.join(model_folder, 'model.sav')
-    model = joblib.load(model_filename)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = ChagasClassifier().to(device)
+    model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth')))
+
     return model
 
 # Run your trained model. This function is *required*. You should edit this function to add your code, but do *not* change the
 # arguments of this function.
 def run_model(record, model, verbose):
-    print(model)
-    # Load the model.
-    model = model['model']
+    print(record)
 
-    # Extract the features.
-    features = extract_features(record)
-    features = features.reshape(1, -1)
+    label = load_label(record)
 
+    signal_data = load_signals(record)
+        
+    signal = signal_data[0]
+    signal = Zero_pad_leads(signal)
+
+    test_dataset = ECGDataset(signal,label,augment=False)
+    test_loader = DataLoader(test_dataset, batch_size=32)
+    
     # Get the model outputs.
-    binary_output = model.predict(features)[0]
-    probability_output = model.predict_proba(features)[0][1]
+    model.eval()
+    test_preds = []
+    test_labels = []
 
-    return binary_output, probability_output
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs).squeeze()
+            preds = torch.sigmoid(outputs) > 0.5
+            test_preds.extend(preds.cpu().numpy())
+            test_labels.extend(labels.cpu().numpy())
+
+    return test_labels, test_preds
 
 ################################################################################
 #
 # Optional functions. You can change or remove these functions and/or add new functions.
 #
 ################################################################################
-
-# Extract your features.
-def extract_features(record):
-    header = load_header(record)
-    age = get_age(header)
-    sex = get_sex(header)
-
-    one_hot_encoding_sex = np.zeros(3, dtype=bool)
-    if sex == 'Female':
-        one_hot_encoding_sex[0] = 1
-    elif sex == 'Male':
-        one_hot_encoding_sex[1] = 1
-    else:
-        one_hot_encoding_sex[2] = 1
-
-    signal, fields = load_signals(record)
-
-    # TO-DO: Update to compute per-lead features. Check lead order and update and use functions for reordering leads as needed.
-
-    num_finite_samples = np.size(np.isfinite(signal))
-    if num_finite_samples > 0:
-        signal_mean = np.nanmean(signal)
-    else:
-        signal_mean = 0.0
-    if num_finite_samples > 1:
-        signal_std = np.nanstd(signal)
-    else:
-        signal_std = 0.0
-
-    features = np.concatenate(([age], one_hot_encoding_sex, [signal_mean, signal_std]))
-
-    return np.asarray(features, dtype=np.float32)
 
 # Save your trained model.
 def save_model(model_folder, model):
@@ -362,5 +304,66 @@ def Zero_pad_leads(arr, target_length=4096):
             padded_array[:, col] = np.pad(col_data, (pad_before, pad_after), mode='constant')
         else:
             padded_array[:, col] = col_data[:target_length]  # Recortar si es más largo
-    
+
     return padded_array
+
+
+
+
+ # Agrupar edades en intervalos de 5 años
+def age_group(age):
+    return (age // 5) * 5
+
+
+def balance_records(path):
+        records = find_records(path, '.hea')
+
+        for i in range(0,len(records)):
+            records[i] = os.path.join(path, records[i])
+
+        
+        
+        # Obtener registros positivos con su edad y sexo
+        positive_records = []
+        age_sex_distribution = []
+        for rec in records:
+            if load_label(rec) == 1:
+                head = load_header(rec)
+                age = get_age(head)
+                sex = get_sex(head)
+                positive_records.append(rec)
+                age_sex_distribution.append((age, sex))
+        
+        num_positives = len(positive_records)
+        if num_positives == 0:
+            raise ValueError("No hay registros positivos en la base de datos")
+        
+       
+        
+        positive_distribution = Counter((age_group(age), sex) for age, sex in age_sex_distribution)
+        
+        # Obtener registros negativos
+        negative_candidates = [rec for rec in records if load_label(rec) == 0]
+        random.shuffle(negative_candidates)  # Barajar los negativos antes de seleccionarlos
+        
+        selected_negatives = []
+        negative_distribution = Counter()
+        
+        for rec in negative_candidates:
+            if len(selected_negatives) >= num_positives:
+                break
+            
+            head = load_header(rec)
+            age = get_age(head)
+            sex = get_sex(head)
+            age_bin = age_group(age)
+            
+            if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)]:
+                selected_negatives.append(rec)
+                negative_distribution[(age_bin, sex)] += 1
+        
+        return positive_records + selected_negatives
+
+# def filter_records(path):
+#     suitable_records = balance_records(path)
+#     return suitable_records
