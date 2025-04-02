@@ -184,7 +184,7 @@ def train_model(data_folder, model_folder, verbose):
         print('Finding the Challenge data...')
 
     
-    records = balance_records(data_folder)
+    records = obtain_balanced_train_dataset(data_folder)
     
     num_records = len(records)
 
@@ -248,6 +248,7 @@ def load_model(model_folder, verbose):
 # Run your trained model. This function is *required*. You should edit this function to add your code, but do *not* change the
 # arguments of this function.
 def run_model(record, model, verbose):
+    
     print(record)
 
     label = load_label(record)
@@ -315,7 +316,7 @@ def age_group(age):
     return (age // 5) * 5
 
 
-def balance_records(path):
+def obtain_balanced_train_dataset(path):
         records = find_records(path, '.hea')
 
         for i in range(0,len(records)):
@@ -361,9 +362,6 @@ def balance_records(path):
             if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)]:
                 selected_negatives.append(rec)
                 negative_distribution[(age_bin, sex)] += 1
-        
+
         return positive_records + selected_negatives
 
-# def filter_records(path):
-#     suitable_records = balance_records(path)
-#     return suitable_records
