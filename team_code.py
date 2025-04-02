@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
+from sklearn.metrics import f1_score, roc_auc_score
 
 import random
 from collections import Counter
@@ -59,60 +60,159 @@ class ECGDataset(Dataset):
                 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
 
-# 2. Arquitectura del modelo
+# # 2. Arquitectura del modelo
+# class ChagasClassifier(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+        
+#         # Bloque CNN
+#         self.cnn = nn.Sequential(
+#             nn.Conv1d(12, 64, 15, padding=7),
+#             nn.BatchNorm1d(64),
+#             nn.ReLU(),
+#             nn.MaxPool1d(2),
+            
+#             nn.Conv1d(64, 128, 7, padding=3),
+#             nn.BatchNorm1d(128),
+#             nn.ReLU(),
+#             nn.MaxPool1d(2),
+            
+#             nn.Conv1d(128, 256, 5, padding=2),
+#             nn.BatchNorm1d(256),
+#             nn.ReLU(),
+#             nn.AdaptiveAvgPool1d(1)  # [batch, 256, 1]
+#         )
+        
+#         # Bloque Transformer
+#         self.transformer = nn.MultiheadAttention(embed_dim=256, num_heads=4)
+        
+#         # Clasificación
+#         self.classifier = nn.Sequential(
+#             nn.Linear(512, 128),
+#             nn.ReLU(),
+#             nn.Dropout(0.5),
+#             nn.Linear(128, 1)
+#         )
+
+#     def forward(self, x):
+#         # CNN
+#         cnn_features = self.cnn(x).squeeze(-1)  # [batch, 256]
+        
+#         # Transformer
+#         transformer_in = cnn_features.unsqueeze(1)  # [batch, 1, 256]
+#         attn_output, _ = self.transformer(transformer_in, transformer_in, transformer_in)
+#         attn_output = attn_output.mean(dim=1)  # [batch, 256]
+        
+#         # Concatenación
+#         combined = torch.cat([cnn_features, attn_output], dim=1)
+        
+#         # Clasificación
+#         return self.classifier(combined)
+    
+
+
+# # 3. Función de entrenamiento y evaluación
+# def train_and_save_model(X, y, model_folder):
+
+#     # Configuración inicial
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#     # Split de datos
+#     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+    
+#     # Crear datasets
+#     train_dataset = ECGDataset(X_train, y_train)
+#     val_dataset = ECGDataset(X_val, y_val, augment=False)
+    
+    
+#     # DataLoaders
+#     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+#     val_loader = DataLoader(val_dataset, batch_size=32)
+    
+    
+#     # Inicializar modelo
+#     model = ChagasClassifier().to(device)
+#     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+#     criterion = nn.BCEWithLogitsLoss()
+    
+#     # Entrenamiento
+#     best_val_acc = 0
+#     for epoch in range(50):
+#         print(epoch)
+#         # Modo entrenamiento
+#         model.train()
+#         for inputs, labels in train_loader:
+#             inputs, labels = inputs.to(device), labels.to(device)
+#             optimizer.zero_grad()
+#             outputs = model(inputs).squeeze()
+#             loss = criterion(outputs, labels)
+#             loss.backward()
+#             optimizer.step()
+        
+#         # Validación
+#         model.eval()
+#         all_preds = []
+#         all_labels = []
+#         with torch.no_grad():
+#             for inputs, labels in val_loader:
+#                 inputs, labels = inputs.to(device), labels.to(device)
+#                 outputs = model(inputs).squeeze()
+#                 preds = torch.sigmoid(outputs) > 0.5
+#                 all_preds.extend(preds.cpu().numpy())
+#                 all_labels.extend(labels.cpu().numpy())
+        
+#         # Métricas
+#         val_acc = (np.array(all_preds) == np.array(all_labels)).mean()
+#         print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}")
+#         print(classification_report(all_labels, all_preds, target_names=['No Chagas', 'Chagas']))
+        
+#         # Early stopping
+#         if val_acc > best_val_acc:
+#             best_val_acc = val_acc
+#             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
+
+
+
+
 class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
-        
-        # Bloque CNN
         self.cnn = nn.Sequential(
-            nn.Conv1d(12, 64, 15, padding=7),
+            nn.Conv1d(12, 64, 7, padding=3),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.MaxPool1d(2),
-            
-            nn.Conv1d(64, 128, 7, padding=3),
+            nn.Conv1d(64, 128, 5, padding=2),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.MaxPool1d(2),
-            
-            nn.Conv1d(128, 256, 5, padding=2),
+            nn.Conv1d(128, 256, 3, padding=1),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1)  # [batch, 256, 1]
+            nn.AdaptiveAvgPool1d(1)
         )
-        
-        # Bloque Transformer
-        self.transformer = nn.MultiheadAttention(embed_dim=256, num_heads=4)
-        
-        # Clasificación
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=256, nhead=4, dim_feedforward=512),
+            num_layers=2
+        )
         self.classifier = nn.Sequential(
-            nn.Linear(512, 128),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(128, 1)
         )
 
     def forward(self, x):
-        # CNN
-        cnn_features = self.cnn(x).squeeze(-1)  # [batch, 256]
-        
-        # Transformer
-        transformer_in = cnn_features.unsqueeze(1)  # [batch, 1, 256]
-        attn_output, _ = self.transformer(transformer_in, transformer_in, transformer_in)
-        attn_output = attn_output.mean(dim=1)  # [batch, 256]
-        
-        # Concatenación
-        combined = torch.cat([cnn_features, attn_output], dim=1)
-        
-        # Clasificación
+        cnn_features = self.cnn(x)  # [batch, 256, 1]
+        transformer_in = cnn_features.permute(2, 0, 1)  # [1, batch, 256]
+        attn_output = self.transformer(transformer_in).mean(dim=0)  # [batch, 256]
+        combined = torch.cat([cnn_features.squeeze(-1), attn_output], dim=1)
         return self.classifier(combined)
-    
 
-
-# 3. Función de entrenamiento y evaluación
 def train_and_save_model(X, y, model_folder):
-
     # Configuración inicial
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -120,25 +220,24 @@ def train_and_save_model(X, y, model_folder):
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
     
     # Crear datasets
-    train_dataset = ECGDataset(X_train, y_train)
+    train_dataset = ECGDataset(X_train, y_train, augment=False)
     val_dataset = ECGDataset(X_val, y_val, augment=False)
     
     
     # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32)
+    train_loader = DataLoader(train_dataset, batch_size = 64, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=64)
     
-    
-    # Inicializar modelo
     model = ChagasClassifier().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
     criterion = nn.BCEWithLogitsLoss()
     
-    # Entrenamiento
-    best_val_acc = 0
+    best_val_auc = 0
+    patience = 10
+    epochs_no_improve = 0
+    
     for epoch in range(50):
-        print(epoch)
-        # Modo entrenamiento
         model.train()
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -148,28 +247,33 @@ def train_and_save_model(X, y, model_folder):
             loss.backward()
             optimizer.step()
         
-        # Validación
         model.eval()
-        all_preds = []
-        all_labels = []
+        all_preds, all_labels, all_probs = [], [], []
         with torch.no_grad():
             for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs).squeeze()
-                preds = torch.sigmoid(outputs) > 0.5
+                probs = torch.sigmoid(outputs)
+                preds = probs > 0.5
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
         
-        # Métricas
         val_acc = (np.array(all_preds) == np.array(all_labels)).mean()
-        print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}")
-        print(classification_report(all_labels, all_preds, target_names=['No Chagas', 'Chagas']))
+        val_f1 = f1_score(all_labels, all_preds)
+        val_auc = roc_auc_score(all_labels, all_probs)
+        print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
         
-        # Early stopping
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_f1 > best_val_auc:
+            best_val_auc = val_f1
             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
-    
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                print("Early stopping triggered")
+                break
+        scheduler.step(val_auc)
 
 #############################################################################################################################################
 
@@ -363,4 +467,5 @@ def obtain_balanced_train_dataset(path):
                 negative_distribution[(age_bin, sex)] += 1
 
         return positive_records + selected_negatives
+
 
