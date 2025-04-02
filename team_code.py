@@ -251,45 +251,46 @@ def run_model(record, model, verbose):
     
     print(record)
 
-    label = load_label(record)
+    label = np.zeros(1, dtype=bool)
 
     signal_data = load_signals(record)
         
     signal = signal_data[0]
     signal = Zero_pad_leads(signal)
+    signal = np.stack([signal], axis=0)
+
 
     test_dataset = ECGDataset(signal,label,augment=False)
-    test_loader = DataLoader(test_dataset, batch_size=32)
+    test_loader = DataLoader(test_dataset, batch_size=1)
     
     # Get the model outputs.
     model.eval()
-    test_preds = []
-    test_labels = []
+    binary_output = []
+    probability_output = [] 
+    
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     with torch.no_grad():
         for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
+            inputs= inputs.to(device)
             outputs = model(inputs).squeeze()
-            preds = torch.sigmoid(outputs) > 0.5
-            test_preds.extend(preds.cpu().numpy())
-            test_labels.extend(labels.cpu().numpy())
+            probs = torch.sigmoid(outputs)
+            
+            probability_output = probs.item()
+            print(probability_output)
 
-    return test_labels, test_preds
+            binary_output = probs > 0.5
+            
+            
+    return binary_output, probability_output
+
 
 ################################################################################
 #
 # Optional functions. You can change or remove these functions and/or add new functions.
 #
 ################################################################################
-
-# Save your trained model.
-def save_model(model_folder, model):
-    d = {'model': model}
-    filename = os.path.join(model_folder, 'model.sav')
-    joblib.dump(d, filename, protocol=0)
-
 
 def Zero_pad_leads(arr, target_length=4096):
     X, Y = arr.shape  # X filas, 12 columnas
@@ -307,8 +308,6 @@ def Zero_pad_leads(arr, target_length=4096):
             padded_array[:, col] = col_data[:target_length]  # Recortar si es más largo
 
     return padded_array
-
-
 
 
  # Agrupar edades en intervalos de 5 años
