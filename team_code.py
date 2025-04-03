@@ -23,8 +23,8 @@ from sklearn.model_selection import train_test_split
 # from sklearn.metrics import classification_report
 from sklearn.metrics import f1_score, roc_auc_score
 import numpy as np
-from scipy.signal import medfilt
-import bottleneck as bn
+# from scipy.signal import medfilt
+# import bottleneck as bn
 
 import random
 from collections import Counter
@@ -49,7 +49,7 @@ class ECGDataset(Dataset):
         ecg = self.X[idx]
         
 
-        ecg = bn.move_median(ecg, window=12, min_count=1)
+        # ecg = bn.move_median(ecg, window=12, min_count=1)
 
         
         

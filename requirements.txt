@@ -157,7 +157,7 @@ nbconvert==7.16.4
 nbdime==4.0.1
 nbformat==5.10.4
 ndindex==1.8
-NEPy @ file:///home/jamon/alvaro/neurocardiology/NEPy-master
+# NEPy @ file:///home/jamon/alvaro/neurocardiology/NEPy-master
 nest-asyncio==1.6.0
 netaddr==1.3.0
 netifaces==0.11.0
