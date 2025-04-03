@@ -20,8 +20,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+# from sklearn.metrics import classification_report
 from sklearn.metrics import f1_score, roc_auc_score
+import numpy as np
+from scipy.signal import medfilt
+import bottleneck as bn
 
 import random
 from collections import Counter
@@ -44,6 +47,11 @@ class ECGDataset(Dataset):
     
     def __getitem__(self, idx):
         ecg = self.X[idx]
+        
+
+        ecg = bn.move_median(ecg, window=12, min_count=1)
+
+        
         
         # Normalización por derivación
         ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
@@ -212,7 +220,7 @@ class ChagasClassifier(nn.Module):
         combined = torch.cat([cnn_features.squeeze(-1), attn_output], dim=1)
         return self.classifier(combined)
 
-def train_and_save_model(X, y, model_folder):
+def train_and_save_model(X, y, model_folder,neg_count,pos_count):
     # Configuración inicial
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -225,12 +233,16 @@ def train_and_save_model(X, y, model_folder):
     
     
     # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size = 64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64)
+    train_loader = DataLoader(train_dataset, batch_size = 128, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=128)
     
     model = ChagasClassifier().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+    neg_count = neg_count
+    pos_count = pos_count
+    pos_weight = torch.tensor([neg_count / pos_count], device=device)  
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     criterion = nn.BCEWithLogitsLoss()
     
     best_val_auc = 0
@@ -264,8 +276,8 @@ def train_and_save_model(X, y, model_folder):
         val_auc = roc_auc_score(all_labels, all_probs)
         print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
         
-        if val_f1 > best_val_auc:
-            best_val_auc = val_f1
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
             epochs_no_improve = 0
         else:
@@ -281,13 +293,16 @@ def train_and_save_model(X, y, model_folder):
 # Train your models. This function is *required*. You should edit this function to add your code, but do *not* change the arguments
 # of this function. If you do not train one of the models, then you can return None for the model.
 
+
+
 # Train your model.
 def train_model(data_folder, model_folder, verbose):
     # Find the data files.
     if verbose:
         print('Finding the Challenge data...')
 
-    
+    # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
+
     records = obtain_balanced_train_dataset(data_folder)
     
     num_records = len(records)
@@ -302,16 +317,26 @@ def train_model(data_folder, model_folder, verbose):
     labels = np.zeros(num_records, dtype=bool)
     signals = []
 
+    neg_count = 0
+    pos_count = 0
+
     # Iterate over the records.
     for i in range(num_records):
         if verbose:
             width = len(str(num_records))
             print(f'- {i+1:>{width}}/{num_records}: {records[i]}...')
-
-        # record = os.path.join(data_folder, records[i])
+        
+        
+        # record = os.path.join(data_folder, records[i]) # Not needed if obtain_balanced_train_dataset() used
+        
         record = records[i]
 
         labels[i] = load_label(record)
+
+        if load_label(record) == 0:
+            neg_count+=1
+        if load_label(record) == 1:
+            pos_count+=1
 
         signal_data = load_signals(record)
 
@@ -320,6 +345,8 @@ def train_model(data_folder, model_folder, verbose):
         signal = Zero_pad_leads(signal)
         signals.append(signal)
 
+    print(neg_count)
+    print(pos_count)
     # Train the models.
     if verbose:
         print('Training the model on the data...')
@@ -331,7 +358,9 @@ def train_model(data_folder, model_folder, verbose):
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(signals,labels,model_folder)
+
+
+    train_and_save_model(signals,labels,model_folder,neg_count,pos_count)
     
     if verbose:
         print('Done.')
@@ -419,42 +448,98 @@ def age_group(age):
     return (age // 5) * 5
 
 
-def obtain_balanced_train_dataset(path):
-        records = find_records(path, '.hea')
+# def obtain_balanced_train_dataset(path):
+#         records = find_records(path, '.hea')
 
-        for i in range(0,len(records)):
-            records[i] = os.path.join(path, records[i])
-
+#         for i in range(0,len(records)):
+#             records[i] = os.path.join(path, records[i])
+            
+#         # Obtener registros positivos con su edad y sexo
+#         positive_records = []
+#         age_sex_distribution = []
+#         for rec in records:
+#             if load_label(rec) == 1:
+#                 head = load_header(rec)
+#                 age = get_age(head)
+#                 sex = get_sex(head)
+#                 positive_records.append(rec)
+#                 age_sex_distribution.append((age, sex))
         
-        
-        # Obtener registros positivos con su edad y sexo
-        positive_records = []
-        age_sex_distribution = []
-        for rec in records:
-            if load_label(rec) == 1:
-                head = load_header(rec)
-                age = get_age(head)
-                sex = get_sex(head)
-                positive_records.append(rec)
-                age_sex_distribution.append((age, sex))
-        
-        num_positives = len(positive_records)
-        if num_positives == 0:
-            raise ValueError("No hay registros positivos en la base de datos")
+#         num_positives = len(positive_records)
+#         if num_positives == 0:
+#             raise ValueError("No hay registros positivos en la base de datos")
         
        
         
-        positive_distribution = Counter((age_group(age), sex) for age, sex in age_sex_distribution)
+#         positive_distribution = Counter((age_group(age), sex) for age, sex in age_sex_distribution)
         
-        # Obtener registros negativos
-        negative_candidates = [rec for rec in records if load_label(rec) == 0]
-        random.shuffle(negative_candidates)  # Barajar los negativos antes de seleccionarlos
+#         # Obtener registros negativos
+#         negative_candidates = [rec for rec in records if load_label(rec) == 0]
+#         random.shuffle(negative_candidates)  # Barajar los negativos antes de seleccionarlos
         
-        selected_negatives = []
-        negative_distribution = Counter()
+#         selected_negatives = []
+#         negative_distribution = Counter()
         
-        for rec in negative_candidates:
-            if len(selected_negatives) >= num_positives:
+#         for rec in negative_candidates:
+#             if len(selected_negatives) >= num_positives:
+#                 break
+            
+#             head = load_header(rec)
+#             age = get_age(head)
+#             sex = get_sex(head)
+#             age_bin = age_group(age)
+            
+#             if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)]:
+#                 selected_negatives.append(rec)
+#                 negative_distribution[(age_bin, sex)] += 1
+
+#         return positive_records + selected_negatives
+
+# import pandas as pd
+# from sklearn.model_selection import train_test_split
+
+def obtain_balanced_train_dataset(data_folder):
+    records = find_records(data_folder, '.hea')
+
+    for i in range(0, len(records)):
+        records[i] = os.path.join(data_folder, records[i])
+        
+    # Obtener registros positivos con su edad y sexo
+    positive_records = []
+    age_sex_distribution = []
+    for rec in records:
+        if load_label(rec) == 1:
+            head = load_header(rec)
+            age = get_age(head)
+            sex = get_sex(head)
+            positive_records.append(rec)
+            age_sex_distribution.append((age, sex))
+    
+    num_positives = len(positive_records)
+    if num_positives == 0:
+        raise ValueError("No hay registros positivos en la base de datos")
+    
+    # Definir rango flexible de negativos (entre el mismo número y un 50% más)
+    min_negatives = num_positives
+    max_negatives = int(num_positives * 1.5)
+    
+    positive_distribution = Counter((age_group(age), sex) for age, sex in age_sex_distribution)
+    
+    # Obtener registros negativos
+    negative_candidates = [rec for rec in records if load_label(rec) == 0]
+    random.shuffle(negative_candidates)  # Barajar los negativos antes de seleccionarlos
+    
+    selected_negatives = []
+    negative_distribution = Counter()
+    threshold_factor = 2  # Factor inicial de flexibilidad en la distribución
+    
+    while len(selected_negatives) < min_negatives and threshold_factor <= 2.5:
+        remaining_candidates = [rec for rec in negative_candidates if rec not in selected_negatives]
+        if not remaining_candidates:
+            break  # Si ya hemos recorrido todos los registros, salimos
+        
+        for rec in remaining_candidates:
+            if len(selected_negatives) >= max_negatives:
                 break
             
             head = load_header(rec)
@@ -462,10 +547,18 @@ def obtain_balanced_train_dataset(path):
             sex = get_sex(head)
             age_bin = age_group(age)
             
-            if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)]:
+            # Permitir cierta flexibilidad en la distribución
+            if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)] * threshold_factor:
                 selected_negatives.append(rec)
                 negative_distribution[(age_bin, sex)] += 1
+        
+        # Aumentar el umbral de flexibilidad si no se han conseguido suficientes negativos
+        if len(selected_negatives) < min_negatives:
+            threshold_factor += 0.1
+        
+    print(len(positive_records))
+    print(len(selected_negatives))
 
-        return positive_records + selected_negatives
+    return positive_records + selected_negatives
 
 
