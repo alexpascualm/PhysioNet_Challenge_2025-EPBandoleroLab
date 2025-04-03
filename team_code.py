@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
-# from sklearn.metrics import classification_report
+
 from sklearn.metrics import f1_score, roc_auc_score
 import numpy as np
 # from scipy.signal import medfilt
@@ -48,10 +48,7 @@ class ECGDataset(Dataset):
     def __getitem__(self, idx):
         ecg = self.X[idx]
         
-
         # ecg = bn.move_median(ecg, window=12, min_count=1)
-
-        
         
         # Normalización por derivación
         ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
@@ -68,120 +65,7 @@ class ECGDataset(Dataset):
                 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
 
-# # 2. Arquitectura del modelo
-# class ChagasClassifier(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-        
-#         # Bloque CNN
-#         self.cnn = nn.Sequential(
-#             nn.Conv1d(12, 64, 15, padding=7),
-#             nn.BatchNorm1d(64),
-#             nn.ReLU(),
-#             nn.MaxPool1d(2),
-            
-#             nn.Conv1d(64, 128, 7, padding=3),
-#             nn.BatchNorm1d(128),
-#             nn.ReLU(),
-#             nn.MaxPool1d(2),
-            
-#             nn.Conv1d(128, 256, 5, padding=2),
-#             nn.BatchNorm1d(256),
-#             nn.ReLU(),
-#             nn.AdaptiveAvgPool1d(1)  # [batch, 256, 1]
-#         )
-        
-#         # Bloque Transformer
-#         self.transformer = nn.MultiheadAttention(embed_dim=256, num_heads=4)
-        
-#         # Clasificación
-#         self.classifier = nn.Sequential(
-#             nn.Linear(512, 128),
-#             nn.ReLU(),
-#             nn.Dropout(0.5),
-#             nn.Linear(128, 1)
-#         )
-
-#     def forward(self, x):
-#         # CNN
-#         cnn_features = self.cnn(x).squeeze(-1)  # [batch, 256]
-        
-#         # Transformer
-#         transformer_in = cnn_features.unsqueeze(1)  # [batch, 1, 256]
-#         attn_output, _ = self.transformer(transformer_in, transformer_in, transformer_in)
-#         attn_output = attn_output.mean(dim=1)  # [batch, 256]
-        
-#         # Concatenación
-#         combined = torch.cat([cnn_features, attn_output], dim=1)
-        
-#         # Clasificación
-#         return self.classifier(combined)
-    
-
-
-# # 3. Función de entrenamiento y evaluación
-# def train_and_save_model(X, y, model_folder):
-
-#     # Configuración inicial
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-#     # Split de datos
-#     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
-    
-#     # Crear datasets
-#     train_dataset = ECGDataset(X_train, y_train)
-#     val_dataset = ECGDataset(X_val, y_val, augment=False)
-    
-    
-#     # DataLoaders
-#     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-#     val_loader = DataLoader(val_dataset, batch_size=32)
-    
-    
-#     # Inicializar modelo
-#     model = ChagasClassifier().to(device)
-#     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-#     criterion = nn.BCEWithLogitsLoss()
-    
-#     # Entrenamiento
-#     best_val_acc = 0
-#     for epoch in range(50):
-#         print(epoch)
-#         # Modo entrenamiento
-#         model.train()
-#         for inputs, labels in train_loader:
-#             inputs, labels = inputs.to(device), labels.to(device)
-#             optimizer.zero_grad()
-#             outputs = model(inputs).squeeze()
-#             loss = criterion(outputs, labels)
-#             loss.backward()
-#             optimizer.step()
-        
-#         # Validación
-#         model.eval()
-#         all_preds = []
-#         all_labels = []
-#         with torch.no_grad():
-#             for inputs, labels in val_loader:
-#                 inputs, labels = inputs.to(device), labels.to(device)
-#                 outputs = model(inputs).squeeze()
-#                 preds = torch.sigmoid(outputs) > 0.5
-#                 all_preds.extend(preds.cpu().numpy())
-#                 all_labels.extend(labels.cpu().numpy())
-        
-#         # Métricas
-#         val_acc = (np.array(all_preds) == np.array(all_labels)).mean()
-#         print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}")
-#         print(classification_report(all_labels, all_preds, target_names=['No Chagas', 'Chagas']))
-        
-#         # Early stopping
-#         if val_acc > best_val_acc:
-#             best_val_acc = val_acc
-#             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
-
-
-
-
+# 2. Arquitectura del modelo
 class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
@@ -219,10 +103,17 @@ class ChagasClassifier(nn.Module):
         attn_output = self.transformer(transformer_in).mean(dim=0)  # [batch, 256]
         combined = torch.cat([cnn_features.squeeze(-1), attn_output], dim=1)
         return self.classifier(combined)
+    
 
+# 3. Función de entrenamiento y guardado
 def train_and_save_model(X, y, model_folder,neg_count,pos_count):
     # Configuración inicial
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if torch.cuda.is_available():
+        print("USING CUDA")
+    else:
+        print("NOthing")
 
     # Split de datos
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
