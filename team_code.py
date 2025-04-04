@@ -23,11 +23,14 @@ from sklearn.model_selection import train_test_split
 
 from sklearn.metrics import f1_score, roc_auc_score
 import numpy as np
-# from scipy.signal import medfilt
-# import bottleneck as bn
 
+
+
+
+from collections import Counter, defaultdict
+import math
 import random
-from collections import Counter
+
 
 ################################################################################
 #
@@ -37,32 +40,19 @@ from collections import Counter
 
 # 1. Clase Dataset con preprocesamiento
 class ECGDataset(Dataset):
-    def __init__(self, X, y, augment=True):
+    def __init__(self, X, y):
         self.X = X
         self.y = y
-        self.augment = augment
         
     def __len__(self):
         return len(self.X)
     
     def __getitem__(self, idx):
         ecg = self.X[idx]
-        
-        # ecg = bn.move_median(ecg, window=12, min_count=1)
-        
+
         # Normalización por derivación
-        ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
-        
-        # Aumento de datos
-        if self.augment:
-            # Desplazamiento temporal
-            shift = np.random.randint(-100, 100)
-            ecg = np.roll(ecg, shift, axis=0)
-            
-            # Ruido gaussiano
-            if np.random.rand() > 0.7:
-                ecg += np.random.normal(0, 0.01, ecg.shape)
-                
+        ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8) 
+
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
 
 # 2. Arquitectura del modelo
@@ -111,16 +101,16 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if torch.cuda.is_available():
-        print("USING CUDA")
+        print("GPU Available")
     else:
-        print("NOthing")
+        print("GPU not available")
 
     # Split de datos
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
     
     # Crear datasets
-    train_dataset = ECGDataset(X_train, y_train, augment=False)
-    val_dataset = ECGDataset(X_val, y_val, augment=False)
+    train_dataset = ECGDataset(X_train, y_train)
+    val_dataset = ECGDataset(X_val, y_val)
     
     
     # DataLoaders
@@ -130,11 +120,11 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
     model = ChagasClassifier().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+
     neg_count = neg_count
     pos_count = pos_count
     pos_weight = torch.tensor([neg_count / pos_count], device=device)  
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    criterion = nn.BCEWithLogitsLoss()
     
     best_val_auc = 0
     patience = 10
@@ -162,6 +152,8 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
                 all_labels.extend(labels.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
         
+        
+        
         val_acc = (np.array(all_preds) == np.array(all_labels)).mean()
         val_f1 = f1_score(all_labels, all_preds)
         val_auc = roc_auc_score(all_labels, all_probs)
@@ -184,8 +176,6 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
 # Train your models. This function is *required*. You should edit this function to add your code, but do *not* change the arguments
 # of this function. If you do not train one of the models, then you can return None for the model.
 
-
-
 # Train your model.
 def train_model(data_folder, model_folder, verbose):
     # Find the data files.
@@ -194,7 +184,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder)
+    records = obtain_balanced_train_dataset(data_folder,ratio=1)
     
     num_records = len(records)
 
@@ -233,17 +223,20 @@ def train_model(data_folder, model_folder, verbose):
 
         signal = signal_data[0]
 
-        signal = Zero_pad_leads(signal)
+        signal = preprocess_12_lead_signal(signal)
+        
+
         signals.append(signal)
 
-    print(neg_count)
-    print(pos_count)
+ 
     # Train the models.
     if verbose:
         print('Training the model on the data...')
 
     signals = np.stack(signals, axis=0)
-    
+
+    print(neg_count)
+    print(pos_count)
     print(labels.shape)
 
     # Create a folder for the model if it does not already exist.
@@ -280,11 +273,14 @@ def run_model(record, model, verbose):
     signal_data = load_signals(record)
         
     signal = signal_data[0]
-    signal = Zero_pad_leads(signal)
+    
+    signal = preprocess_12_lead_signal(signal)
+
+    
     signal = np.stack([signal], axis=0)
 
 
-    test_dataset = ECGDataset(signal,label,augment=False)
+    test_dataset = ECGDataset(signal,label)
     test_loader = DataLoader(test_dataset, batch_size=1)
     
     # Get the model outputs.
@@ -334,67 +330,75 @@ def Zero_pad_leads(arr, target_length=4096):
     return padded_array
 
 
- # Agrupar edades en intervalos de 5 años
+
+from scipy.signal import medfilt, butter, filtfilt
+
+def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
+    short_window = int(fs * short_window_ms / 1000)
+    long_window = int(fs * long_window_ms / 1000)
+    if short_window % 2 == 0:
+        short_window += 1
+    if long_window % 2 == 0:
+        long_window += 1
+    baseline = medfilt(signal, kernel_size=short_window)
+    baseline = medfilt(baseline, kernel_size=long_window)
+    return signal - baseline
+
+def bandpass_filter(signal, fs=400, lowcut=0.5, highcut=30, order=4):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(order, [low, high], btype='band')
+    filtered = filtfilt(b, a, signal)
+    return filtered
+
+
+def filter_signal(signal_all_leads):
+    X, Y = signal_all_leads.shape  # X filas, 12 columnas
+    leads__array = np.zeros((X, Y))  # Matriz destino con ceros
+
+    for col in range(Y):
+
+        signal = signal_all_leads[:, col]  # Extraer columna
+        signal = apply_median_filter(signal)
+        signal = bandpass_filter(signal)
+
+        leads__array[:, col] = signal
+
+    return leads__array
+
+def preprocess_12_lead_signal(all_lead_signal):
+    filtered_all_lead_signal = filter_signal(all_lead_signal)
+
+    zero_padded_filtered_all_lead_signal = Zero_pad_leads(filtered_all_lead_signal)
+    return zero_padded_filtered_all_lead_signal
+
+
+
+# Agrupar edades en intervalos de 5 años
 def age_group(age):
     return (age // 5) * 5
 
-
-# def obtain_balanced_train_dataset(path):
-#         records = find_records(path, '.hea')
-
-#         for i in range(0,len(records)):
-#             records[i] = os.path.join(path, records[i])
-            
-#         # Obtener registros positivos con su edad y sexo
-#         positive_records = []
-#         age_sex_distribution = []
-#         for rec in records:
-#             if load_label(rec) == 1:
-#                 head = load_header(rec)
-#                 age = get_age(head)
-#                 sex = get_sex(head)
-#                 positive_records.append(rec)
-#                 age_sex_distribution.append((age, sex))
-        
-#         num_positives = len(positive_records)
-#         if num_positives == 0:
-#             raise ValueError("No hay registros positivos en la base de datos")
-        
-       
-        
-#         positive_distribution = Counter((age_group(age), sex) for age, sex in age_sex_distribution)
-        
-#         # Obtener registros negativos
-#         negative_candidates = [rec for rec in records if load_label(rec) == 0]
-#         random.shuffle(negative_candidates)  # Barajar los negativos antes de seleccionarlos
-        
-#         selected_negatives = []
-#         negative_distribution = Counter()
-        
-#         for rec in negative_candidates:
-#             if len(selected_negatives) >= num_positives:
-#                 break
-            
-#             head = load_header(rec)
-#             age = get_age(head)
-#             sex = get_sex(head)
-#             age_bin = age_group(age)
-            
-#             if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)]:
-#                 selected_negatives.append(rec)
-#                 negative_distribution[(age_bin, sex)] += 1
-
-#         return positive_records + selected_negatives
-
-# import pandas as pd
-# from sklearn.model_selection import train_test_split
-
-def obtain_balanced_train_dataset(data_folder):
-    records = find_records(data_folder, '.hea')
-
-    for i in range(0, len(records)):
-        records[i] = os.path.join(data_folder, records[i])
-        
+def obtain_balanced_train_dataset(path, ratio=1.0):
+    """
+    Selecciona registros positivos y negativos de una base de datos, con una proporción
+    de negativos aproximadamente igual a ratio * len(positivos).
+    
+    Args:
+        path (str): Ruta al directorio con los registros.
+        ratio (float): Proporción deseada de negativos respecto a positivos (default=1.0).
+    
+    Returns:
+        list: Lista de registros seleccionados (positivos + negativos).
+    
+    Raises:
+        ValueError: Si no hay registros positivos en la base de datos.
+    """
+    # Obtener todos los registros
+    records = find_records(path, '.hea')
+    for i in range(len(records)):
+        records[i] = os.path.join(path, records[i])
+    
     # Obtener registros positivos con su edad y sexo
     positive_records = []
     age_sex_distribution = []
@@ -404,52 +408,63 @@ def obtain_balanced_train_dataset(data_folder):
             age = get_age(head)
             sex = get_sex(head)
             positive_records.append(rec)
-            age_sex_distribution.append((age, sex))
+            age_sex_distribution.append((age_group(age), sex))
     
     num_positives = len(positive_records)
     if num_positives == 0:
         raise ValueError("No hay registros positivos en la base de datos")
     
-    # Definir rango flexible de negativos (entre el mismo número y un 50% más)
-    min_negatives = num_positives
-    max_negatives = int(num_positives * 1.5)
+    # Distribución de positivos por combinación (edad en lustros, sexo)
+    positive_distribution = Counter(age_sex_distribution)
     
-    positive_distribution = Counter((age_group(age), sex) for age, sex in age_sex_distribution)
-    
-    # Obtener registros negativos
+    # Obtener candidatos negativos
     negative_candidates = [rec for rec in records if load_label(rec) == 0]
-    random.shuffle(negative_candidates)  # Barajar los negativos antes de seleccionarlos
     
+    # Agrupar negativos por combinación (edad en lustros, sexo)
+    negative_by_combination = defaultdict(list)
+    for rec in negative_candidates:
+        head = load_header(rec)
+        age = get_age(head)
+        sex = get_sex(head)
+        comb = (age_group(age), sex)
+        # Solo consideramos combinaciones presentes en los positivos
+        if comb in positive_distribution:
+            negative_by_combination[comb].append(rec)
+    
+    # Barajar los negativos dentro de cada combinación para selección aleatoria
+    for comb in negative_by_combination:
+        random.shuffle(negative_by_combination[comb])
+    
+    # Calcular el número total deseado de negativos
+    total_desired_negatives = math.ceil(ratio * num_positives)
+    
+    # Inicializar estructuras para la selección
     selected_negatives = []
-    negative_distribution = Counter()
-    threshold_factor = 2  # Factor inicial de flexibilidad en la distribución
+    selected_counts = {comb: 0 for comb in positive_distribution}
     
-    while len(selected_negatives) < min_negatives and threshold_factor <= 2.5:
-        remaining_candidates = [rec for rec in negative_candidates if rec not in selected_negatives]
-        if not remaining_candidates:
-            break  # Si ya hemos recorrido todos los registros, salimos
+    # Seleccionar negativos hasta alcanzar el total deseado o agotar candidatos
+    while len(selected_negatives) < total_desired_negatives and any(negative_by_combination[comb] for comb in positive_distribution):
+        # Encontrar la combinación con la menor proporción respecto a lo deseado
+        min_ratio = float('inf')
+        best_comb = None
+        for comb in positive_distribution:
+            if negative_by_combination[comb]:  # Si hay negativos disponibles
+                desired = ratio * positive_distribution[comb]
+                ratio_current = selected_counts[comb] / desired if desired > 0 else float('inf')
+                if ratio_current < min_ratio:
+                    min_ratio = ratio_current
+                    best_comb = comb
         
-        for rec in remaining_candidates:
-            if len(selected_negatives) >= max_negatives:
-                break
-            
-            head = load_header(rec)
-            age = get_age(head)
-            sex = get_sex(head)
-            age_bin = age_group(age)
-            
-            # Permitir cierta flexibilidad en la distribución
-            if negative_distribution[(age_bin, sex)] < positive_distribution[(age_bin, sex)] * threshold_factor:
-                selected_negatives.append(rec)
-                negative_distribution[(age_bin, sex)] += 1
+        if best_comb is None:
+            break  # No hay más combinaciones con negativos disponibles
         
-        # Aumentar el umbral de flexibilidad si no se han conseguido suficientes negativos
-        if len(selected_negatives) < min_negatives:
-            threshold_factor += 0.1
-        
-    print(len(positive_records))
-    print(len(selected_negatives))
-
+        # Seleccionar un negativo de la combinación elegida
+        neg_rec = negative_by_combination[best_comb].pop()
+        selected_negatives.append(neg_rec)
+        selected_counts[best_comb] += 1
+    
+    # Devolver la lista completa de registros seleccionados
     return positive_records + selected_negatives
+
 
 
