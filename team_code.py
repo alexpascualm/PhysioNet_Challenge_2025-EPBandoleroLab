@@ -17,9 +17,11 @@ from helper_code import *
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+# import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
+
+# from scipy.signal import medfilt, butter, filtfilt
 
 from sklearn.metrics import f1_score, roc_auc_score
 import numpy as np
@@ -60,40 +62,63 @@ class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
-            nn.Conv1d(12, 64, 7, padding=3),
+            nn.Conv1d(12, 64, 3, padding=1),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.MaxPool1d(2),
-            nn.Conv1d(64, 128, 5, padding=2),
+            nn.Conv1d(64, 128, 3, padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.MaxPool1d(2),
             nn.Conv1d(128, 256, 3, padding=1),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1)
+            nn.MaxPool1d(2),
+            nn.Conv1d(256, 512, 3, padding=1),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(10)  # Secuencia de longitud 10
         )
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=256, nhead=4, dim_feedforward=512),
-            num_layers=2
+            nn.TransformerEncoderLayer(d_model=512, nhead=8, dim_feedforward=1024),
+            num_layers=3
         )
         self.classifier = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 1)
+            nn.Linear(256, 1)
         )
 
     def forward(self, x):
-        cnn_features = self.cnn(x)  # [batch, 256, 1]
-        transformer_in = cnn_features.permute(2, 0, 1)  # [1, batch, 256]
-        attn_output = self.transformer(transformer_in).mean(dim=0)  # [batch, 256]
-        combined = torch.cat([cnn_features.squeeze(-1), attn_output], dim=1)
+        cnn_features = self.cnn(x)  # [batch, 512, 10]
+        transformer_in = cnn_features.permute(0, 2, 1)  # [batch, 10, 512]
+        attn_output = self.transformer(transformer_in).mean(dim=1)  # [batch, 512]
+        combined = torch.cat([cnn_features.mean(dim=2), attn_output], dim=1)  # [batch, 1024]
         return self.classifier(combined)
     
+class FocalLoss(nn.Module):
+    def __init__(self, pos_weight, alpha=0.5, gamma=2.0):
+        super().__init__()
+        self.pos_weight = torch.tensor(pos_weight, dtype=torch.float32)
+        self.alpha = alpha
+        self.gamma = gamma
+        # Inicializar BCEWithLogitsLoss con pos_weight
+        self.bce_loss = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight, reduction='none')
+
+    def forward(self, inputs, targets):
+        # Calcular la pérdida BCE con pos_weight
+        BCE_loss = self.bce_loss(inputs, targets)
+        # Calcular pt (probabilidad de la clase correcta)
+        pt = torch.exp(-BCE_loss)
+        # Aplicar Focal Loss
+        F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
+        return F_loss.mean()
+
+
 
 # 3. Función de entrenamiento y guardado
 def train_and_save_model(X, y, model_folder,neg_count,pos_count):
@@ -124,9 +149,10 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
     neg_count = neg_count
     pos_count = pos_count
     pos_weight = torch.tensor([neg_count / pos_count], device=device)  
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = FocalLoss(pos_weight, alpha=0.9, gamma=3.0)
     
-    best_val_auc = 0
+    best_challenge_score = 0
     patience = 10
     epochs_no_improve = 0
     
@@ -152,15 +178,16 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
                 all_labels.extend(labels.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
         
-        
+        # Calcular métricas
+        challenge_score = compute_challenge_score(all_labels, all_probs)
         
         val_acc = (np.array(all_preds) == np.array(all_labels)).mean()
         val_f1 = f1_score(all_labels, all_preds)
         val_auc = roc_auc_score(all_labels, all_probs)
-        print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
+        print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}, Challenge Score: {challenge_score:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
         
-        if val_auc > best_val_auc:
-            best_val_auc = val_auc
+        if challenge_score > best_challenge_score:
+            best_challenge_score = challenge_score
             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
             epochs_no_improve = 0
         else:
@@ -168,7 +195,7 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
             if epochs_no_improve >= patience:
                 print("Early stopping triggered")
                 break
-        scheduler.step(val_auc)
+        scheduler.step(challenge_score)
 
 #############################################################################################################################################
 
@@ -184,7 +211,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder,ratio=1)
+    records = obtain_balanced_train_dataset(data_folder, ratio=4)
     
     num_records = len(records)
 
@@ -198,34 +225,21 @@ def train_model(data_folder, model_folder, verbose):
     labels = np.zeros(num_records, dtype=bool)
     signals = []
 
-    neg_count = 0
-    pos_count = 0
-
     # Iterate over the records.
     for i in range(num_records):
         if verbose:
             width = len(str(num_records))
             print(f'- {i+1:>{width}}/{num_records}: {records[i]}...')
         
-        
         # record = os.path.join(data_folder, records[i]) # Not needed if obtain_balanced_train_dataset() used
-        
         record = records[i]
 
         labels[i] = load_label(record)
 
-        if load_label(record) == 0:
-            neg_count+=1
-        if load_label(record) == 1:
-            pos_count+=1
-
         signal_data = load_signals(record)
-
         signal = signal_data[0]
-
         signal = preprocess_12_lead_signal(signal)
         
-
         signals.append(signal)
 
  
@@ -235,14 +249,16 @@ def train_model(data_folder, model_folder, verbose):
 
     signals = np.stack(signals, axis=0)
 
+
+    neg_count = np.count_nonzero(labels == 0)
+    pos_count = np.count_nonzero(labels == 1)
+
     print(neg_count)
     print(pos_count)
     print(labels.shape)
 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
-
-
 
     train_and_save_model(signals,labels,model_folder,neg_count,pos_count)
     
@@ -265,20 +281,13 @@ def load_model(model_folder, verbose):
 # Run your trained model. This function is *required*. You should edit this function to add your code, but do *not* change the
 # arguments of this function.
 def run_model(record, model, verbose):
-    
-    print(record)
-
     label = np.zeros(1, dtype=bool)
 
     signal_data = load_signals(record)
-        
     signal = signal_data[0]
-    
     signal = preprocess_12_lead_signal(signal)
-
     
     signal = np.stack([signal], axis=0)
-
 
     test_dataset = ECGDataset(signal,label)
     test_loader = DataLoader(test_dataset, batch_size=1)
@@ -296,12 +305,8 @@ def run_model(record, model, verbose):
             inputs= inputs.to(device)
             outputs = model(inputs).squeeze()
             probs = torch.sigmoid(outputs)
-            
             probability_output = probs.item()
-            print(probability_output)
-
             binary_output = probs > 0.5
-            
             
     return binary_output, probability_output
 
@@ -330,47 +335,44 @@ def Zero_pad_leads(arr, target_length=4096):
     return padded_array
 
 
+# def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
+#     short_window = int(fs * short_window_ms / 1000)
+#     long_window = int(fs * long_window_ms / 1000)
+#     if short_window % 2 == 0:
+#         short_window += 1
+#     if long_window % 2 == 0:
+#         long_window += 1
+#     baseline = medfilt(signal, kernel_size=short_window)
+#     baseline = medfilt(baseline, kernel_size=long_window)
+#     return signal - baseline
 
-from scipy.signal import medfilt, butter, filtfilt
-
-def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
-    short_window = int(fs * short_window_ms / 1000)
-    long_window = int(fs * long_window_ms / 1000)
-    if short_window % 2 == 0:
-        short_window += 1
-    if long_window % 2 == 0:
-        long_window += 1
-    baseline = medfilt(signal, kernel_size=short_window)
-    baseline = medfilt(baseline, kernel_size=long_window)
-    return signal - baseline
-
-def bandpass_filter(signal, fs=400, lowcut=0.5, highcut=30, order=4):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = butter(order, [low, high], btype='band')
-    filtered = filtfilt(b, a, signal)
-    return filtered
+# def bandpass_filter(signal, fs=400, lowcut=0.5, highcut=30, order=4):
+#     nyq = 0.5 * fs
+#     low = lowcut / nyq
+#     high = highcut / nyq
+#     b, a = butter(order, [low, high], btype='band')
+#     filtered = filtfilt(b, a, signal)
+#     return filtered
 
 
-def filter_signal(signal_all_leads):
-    X, Y = signal_all_leads.shape  # X filas, 12 columnas
-    leads__array = np.zeros((X, Y))  # Matriz destino con ceros
+# def filter_signal(signal_all_leads):
+#     X, Y = signal_all_leads.shape  # X filas, 12 columnas
+#     leads__array = np.zeros((X, Y))  # Matriz destino con ceros
 
-    for col in range(Y):
+#     for col in range(Y):
 
-        signal = signal_all_leads[:, col]  # Extraer columna
-        signal = apply_median_filter(signal)
-        signal = bandpass_filter(signal)
+#         signal = signal_all_leads[:, col]  # Extraer columna
+#         signal = apply_median_filter(signal)
+#         signal = bandpass_filter(signal)
 
-        leads__array[:, col] = signal
+#         leads__array[:, col] = signal
 
-    return leads__array
+#     return leads__array
 
 def preprocess_12_lead_signal(all_lead_signal):
-    filtered_all_lead_signal = filter_signal(all_lead_signal)
+    # filtered_all_lead_signal = filter_signal(all_lead_signal)
 
-    zero_padded_filtered_all_lead_signal = Zero_pad_leads(filtered_all_lead_signal)
+    zero_padded_filtered_all_lead_signal = Zero_pad_leads(all_lead_signal)
     return zero_padded_filtered_all_lead_signal
 
 
