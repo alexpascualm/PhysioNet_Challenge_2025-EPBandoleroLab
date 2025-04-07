@@ -23,7 +23,7 @@ from sklearn.model_selection import train_test_split
 
 # from scipy.signal import medfilt, butter, filtfilt
 
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, precision_recall_curve, auc
 import numpy as np
 
 
@@ -121,7 +121,7 @@ class FocalLoss(nn.Module):
 
 
 # 3. Función de entrenamiento y guardado
-def train_and_save_model(X, y, model_folder,neg_count,pos_count):
+def train_and_save_model(X, y, model_folder):
     # Configuración inicial
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -146,18 +146,23 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
 
-    neg_count = neg_count
-    pos_count = pos_count
-    pos_weight = torch.tensor([neg_count / pos_count], device=device)  
+    pos_count = np.sum(y_train == 1)
+    neg_count = np.sum(y_train == 0)
+    pos_weight = neg_count / pos_count
+
+    pos_weight = torch.tensor([pos_weight], device=device)  
     # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    criterion = FocalLoss(pos_weight, alpha=0.9, gamma=3.0)
+    criterion = FocalLoss(pos_weight, alpha=0.5, gamma=2.0)
     
     best_challenge_score = 0
     patience = 10
     epochs_no_improve = 0
-    
+
     for epoch in range(50):
+        # Entrenamiento
         model.train()
+        train_loss = 0
+        train_probs, train_labels = [], []
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -165,29 +170,55 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
+            train_loss += loss.item()
+            
+            # Guardar probabilidades para métricas
+            probs = torch.sigmoid(outputs)
+            train_probs.extend(probs.cpu().detach().numpy())
+            train_labels.extend(labels.cpu().detach().numpy())
         
+        train_loss = train_loss/len(train_loader)
+        
+        # Calcular métricas en el conjunto de entrenamiento
+        train_challenge_score = compute_challenge_score(train_labels, train_probs)
+        train_f1 = f1_score(train_labels, np.array(train_probs) > 0.7)
+        train_auc = roc_auc_score(train_labels, train_probs)
+        precision, recall, _ = precision_recall_curve(train_labels, train_probs)
+        train_auprc = auc(recall, precision)
+        
+        # Validación
         model.eval()
-        all_preds, all_labels, all_probs = [], [], []
+        val_loss = 0
+        val_probs, val_labels = [], []
         with torch.no_grad():
             for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs).squeeze()
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+                
                 probs = torch.sigmoid(outputs)
-                preds = probs > 0.5
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                all_probs.extend(probs.cpu().numpy())
+                val_probs.extend(probs.cpu().numpy())
+                val_labels.extend(labels.cpu().numpy())
         
-        # Calcular métricas
-        challenge_score = compute_challenge_score(all_labels, all_probs)
+        val_loss = val_loss/len(val_loader)
+
+    
+        # Calcular métricas en el conjunto de validación
+        val_challenge_score = compute_challenge_score(val_labels, val_probs)
+        val_f1 = f1_score(val_labels, np.array(val_probs) > 0.7)
+        val_auc = roc_auc_score(val_labels, val_probs)
+        precision, recall, _ = precision_recall_curve(val_labels, val_probs)
+        val_auprc = auc(recall, precision)
         
-        val_acc = (np.array(all_preds) == np.array(all_labels)).mean()
-        val_f1 = f1_score(all_labels, all_preds)
-        val_auc = roc_auc_score(all_labels, all_probs)
-        print(f"Epoch {epoch+1}: Val Acc: {val_acc:.4f}, Challenge Score: {challenge_score:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
+       # Imprimir métricas
+        print(f"Epoch {epoch+1}:")
+        print(f"  Train - Loss: {train_loss:.4f}, Challenge Score: {train_challenge_score:.4f}, F1: {train_f1:.4f}, AUC: {train_auc:.4f}, AUPRC: {train_auprc:.4f}")
+        print(f"  Val   - Loss: {val_loss:.4f}, Challenge Score: {val_challenge_score:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}, AUPRC: {val_auprc:.4f}")
         
-        if challenge_score > best_challenge_score:
-            best_challenge_score = challenge_score
+        # Guardar el mejor modelo basado en el challenge_score de validación
+        if val_challenge_score > best_challenge_score:
+            best_challenge_score = val_challenge_score
             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
             epochs_no_improve = 0
         else:
@@ -195,8 +226,14 @@ def train_and_save_model(X, y, model_folder,neg_count,pos_count):
             if epochs_no_improve >= patience:
                 print("Early stopping triggered")
                 break
-        scheduler.step(challenge_score)
-
+        
+        # Ajustar el learning rate basado en el challenge_score de validación
+        scheduler.step(val_challenge_score)
+        
+        # Detección de overfitting
+        if train_challenge_score - val_challenge_score > 0.1:  # Umbral arbitrario para detectar overfitting
+            print("Warning: Potential overfitting detected (Train Challenge Score significantly higher than Val)")
+    
 #############################################################################################################################################
 
 
@@ -211,7 +248,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder, ratio=4)
+    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=4)
     
     num_records = len(records)
 
@@ -249,18 +286,12 @@ def train_model(data_folder, model_folder, verbose):
 
     signals = np.stack(signals, axis=0)
 
-
-    neg_count = np.count_nonzero(labels == 0)
-    pos_count = np.count_nonzero(labels == 1)
-
-    print(neg_count)
-    print(pos_count)
     print(labels.shape)
 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(signals,labels,model_folder,neg_count,pos_count)
+    train_and_save_model(signals,labels,model_folder)
     
     if verbose:
         print('Done.')
@@ -306,7 +337,7 @@ def run_model(record, model, verbose):
             outputs = model(inputs).squeeze()
             probs = torch.sigmoid(outputs)
             probability_output = probs.item()
-            binary_output = probs > 0.5
+            binary_output = probs > 0.7
             
     return binary_output, probability_output
 
@@ -360,8 +391,14 @@ def Zero_pad_leads(arr, target_length=4096):
 #     leads__array = np.zeros((X, Y))  # Matriz destino con ceros
 
 #     for col in range(Y):
-
 #         signal = signal_all_leads[:, col]  # Extraer columna
+#         # Verificar longitud mínima
+#         min_length = int(400 * 600 / 1000)
+#         if len(signal) < min_length:
+#             print(f"Advertencia: Señal en lead {col} tiene longitud {len(signal)} < {min_length}. Saltando procesamiento.")
+#             leads__array[:, col] = signal  # Dejar sin filtrar o manejar de otra forma
+#             continue
+
 #         signal = apply_median_filter(signal)
 #         signal = bandpass_filter(signal)
 
@@ -381,14 +418,14 @@ def preprocess_12_lead_signal(all_lead_signal):
 def age_group(age):
     return (age // 5) * 5
 
-def obtain_balanced_train_dataset(path, ratio=1.0):
+def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
     """
     Selecciona registros positivos y negativos de una base de datos, con una proporción
-    de negativos aproximadamente igual a ratio * len(positivos).
+    de negativos aproximadamente igual a negative_to_positive_ratio * len(positivos).
     
     Args:
         path (str): Ruta al directorio con los registros.
-        ratio (float): Proporción deseada de negativos respecto a positivos (default=1.0).
+        negative_to_positive_ratio (float): Proporción deseada de negativos respecto a positivos (default=1.0).
     
     Returns:
         list: Lista de registros seleccionados (positivos + negativos).
@@ -438,7 +475,7 @@ def obtain_balanced_train_dataset(path, ratio=1.0):
         random.shuffle(negative_by_combination[comb])
     
     # Calcular el número total deseado de negativos
-    total_desired_negatives = math.ceil(ratio * num_positives)
+    total_desired_negatives = math.ceil(negative_to_positive_ratio * num_positives)
     
     # Inicializar estructuras para la selección
     selected_negatives = []
@@ -451,7 +488,7 @@ def obtain_balanced_train_dataset(path, ratio=1.0):
         best_comb = None
         for comb in positive_distribution:
             if negative_by_combination[comb]:  # Si hay negativos disponibles
-                desired = ratio * positive_distribution[comb]
+                desired = negative_to_positive_ratio * positive_distribution[comb]
                 ratio_current = selected_counts[comb] / desired if desired > 0 else float('inf')
                 if ratio_current < min_ratio:
                     min_ratio = ratio_current

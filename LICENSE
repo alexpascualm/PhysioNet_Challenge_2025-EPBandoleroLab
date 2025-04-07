@@ -1,7 +1,11 @@
 BSD 2-Clause License
 
 Copyright (c) 2025 George B. Moody PhysioNet Challenges
+Copyright (c) 2025 EPBandoleroLab, EPAnalytics Group, ITACA Institute, Universitat Politècnica de València  
 All rights reserved.
+
+This repository is based on the original PhysioNet Challenge 2025 python example code.  
+Modifications and extensions were made by EPBandoleroLab team from the EP Analytics research group at the ITACA Institute, Universitat Politècnica de València.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:

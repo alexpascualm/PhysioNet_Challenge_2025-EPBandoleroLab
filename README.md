@@ -2,9 +2,20 @@
 
 ## What's in this repository?
 
-This repository contains a simple example that illustrates how to format a Python entry for the [George B. Moody PhysioNet Challenge 2025](https://physionetchallenges.org/2025/). If you are participating in the 2025 Challenge, then we recommend using this repository as a template for your entry. You can remove some of the code, reuse other code, and add new code to create your entry. You do not need to use the models, features, and/or libraries in this example for your entry. We encourage a diversity of approaches to the Challenges.
+## What's in this repository?
 
-For this example, we implemented a random forest model with several simple features. (This simple example is **not** designed to perform well, so you should **not** use it as a baseline for your approach's performance.) You can try it by running the following commands on the Challenge training set. If you are using a relatively recent personal computer, then you should be able to run these commands from start to finish on a small subset (1000 records) of the training data in a few minutes or less.
+This repository is based on the official example provided for the [George B. Moody PhysioNet Challenge 2025](https://physionetchallenges.org/2025/). It initially illustrated how to format a Python entry for the Challenge.
+
+The current version has been significantly modified by **EPBandoleroLab**, from the **EPAnalytics group** at the **ITACA Institute**, **Universitat Politècnica de València**. Our team has extended the original code with:
+
+- Preprocessing and cleaning of the dataset.
+- Filtering of training records to ensure data quality and consistency.
+- Development of a deep learning-based classification model tailored to the Challenge’s goals.
+- Additional utilities for data inspection, logging, and model evaluation.
+
+While the structure and format from the original example were used as a starting point, much of the core functionality has been adapted or rewritten to meet our design objectives and to explore more powerful machine learning approaches.
+
+We hope this version serves as a useful reference for future participants.
 
 ## How do I run these scripts?
 
