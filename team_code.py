@@ -119,7 +119,7 @@ class FocalLoss(nn.Module):
 
 
 # 3. Función de entrenamiento y guardado
-def train_and_save_model(X, y, model_folder):
+def train_and_save_model(X, y, model_folder,obtain_test_metrics):
     # Configuración inicial
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -129,21 +129,23 @@ def train_and_save_model(X, y, model_folder):
         print("GPU not available")
 
     # Split de datos
-    # X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+    if obtain_test_metrics:
+        X_train, X_aux, y_train, y_aux = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
+        X_val, X_test, y_val, y_test = train_test_split(X_aux, y_aux, test_size=0.5, stratify=y_aux, random_state=42)
 
-    X_train, X_aux, y_train, y_aux = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
-    X_val, X_test, y_val, y_test = train_test_split(X_aux, y_aux, test_size=0.5, stratify=y_aux, random_state=42)
-    
+        test_dataset = ECGDataset(X_test, y_test)
+        test_loader = DataLoader(test_dataset, batch_size=128)
+    else:
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)   
     
     # Crear datasets
     train_dataset = ECGDataset(X_train, y_train)
     val_dataset = ECGDataset(X_val, y_val)
-    test_dataset = ECGDataset(X_test, y_test)
-    
+        
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size = 128, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=128)
-    test_loader = DataLoader(test_dataset, batch_size=128)
+    
     
     model = ChagasClassifier().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
@@ -236,35 +238,36 @@ def train_and_save_model(X, y, model_folder):
         if train_challenge_score - val_challenge_score > 0.1:  # Umbral arbitrario para detectar overfitting
             print("Warning: Potential overfitting detected (Train Challenge Score significantly higher than Val)")
 
-    # Test
-    model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth')))
-    model.eval()
-    test_loss = 0
-    test_probs, test_labels = [], []
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
-            loss = criterion(outputs, labels)
-            test_loss += loss.item()
-                
-            probs = torch.sigmoid(outputs)
-            test_probs.extend(probs.cpu().numpy())
-            test_labels.extend(labels.cpu().numpy())
-        
-    test_loss = test_loss/len(test_loader)
-
-    # Evaluate the model outputs.
-    test_pred_labels = np.array(test_probs) > PROB_THRESHOLD
-    test_challenge_score = compute_challenge_score(test_labels, test_probs)
-    test_auc, test_auprc = compute_auc(test_labels, test_probs)
-    test_accuracy = compute_accuracy(test_labels, test_pred_labels)
-    test_f1 = compute_f_measure(test_labels, test_pred_labels)
-
+    if obtain_test_metrics:
+        # Test
+        model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth')))
+        model.eval()
+        test_loss = 0
+        test_probs, test_labels = [], []
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs).squeeze()
+                loss = criterion(outputs, labels)
+                test_loss += loss.item()
+                    
+                probs = torch.sigmoid(outputs)
+                test_probs.extend(probs.cpu().numpy())
+                test_labels.extend(labels.cpu().numpy())
             
-    # Imprimir métricas
-    print("Test inference")
-    print(f"  Test - Loss: {test_loss:.4f}, Challenge Score: {test_challenge_score:.4f}, F1: {test_f1:.4f}, Accuracy: {test_accuracy:.4f},  AUC: {test_auc:.4f}, AUPRC: {test_auprc:.4f}")
+        test_loss = test_loss/len(test_loader)
+
+        # Evaluate the model outputs.
+        test_pred_labels = np.array(test_probs) > PROB_THRESHOLD
+        test_challenge_score = compute_challenge_score(test_labels, test_probs)
+        test_auc, test_auprc = compute_auc(test_labels, test_probs)
+        test_accuracy = compute_accuracy(test_labels, test_pred_labels)
+        test_f1 = compute_f_measure(test_labels, test_pred_labels)
+
+                
+        # Imprimir métricas
+        print("Test inference")
+        print(f"  Test - Loss: {test_loss:.4f}, Challenge Score: {test_challenge_score:.4f}, F1: {test_f1:.4f}, Accuracy: {test_accuracy:.4f},  AUC: {test_auc:.4f}, AUPRC: {test_auprc:.4f}")
     
 #############################################################################################################################################
 
@@ -280,7 +283,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
+    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=5)
     
     num_records = len(records)
 
@@ -323,7 +326,7 @@ def train_model(data_folder, model_folder, verbose):
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(signals,labels,model_folder)
+    train_and_save_model(signals,labels,model_folder,obtain_test_metrics=False)
     
     if verbose:
         print('Done.')
@@ -369,7 +372,7 @@ def run_model(record, model, verbose):
             outputs = model(inputs).squeeze()
             probs = torch.sigmoid(outputs)
             probability_output = probs.item()
-            binary_output = probs > 0.9
+            binary_output = probs > PROB_THRESHOLD
             
     return binary_output, probability_output
 
@@ -398,45 +401,45 @@ def Zero_pad_leads(arr, target_length=4096):
     return padded_array
 
 
-def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
-    short_window = int(fs * short_window_ms / 1000)
-    long_window = int(fs * long_window_ms / 1000)
-    if short_window % 2 == 0:
-        short_window += 1
-    if long_window % 2 == 0:
-        long_window += 1
-    baseline = medfilt(signal, kernel_size=short_window)
-    baseline = medfilt(baseline, kernel_size=long_window)
-    return signal - baseline
+# def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
+#     short_window = int(fs * short_window_ms / 1000)
+#     long_window = int(fs * long_window_ms / 1000)
+#     if short_window % 2 == 0:
+#         short_window += 1
+#     if long_window % 2 == 0:
+#         long_window += 1
+#     baseline = medfilt(signal, kernel_size=short_window)
+#     baseline = medfilt(baseline, kernel_size=long_window)
+#     return signal - baseline
 
-def bandpass_filter(signal, fs=400, lowcut=0.5, highcut=30, order=4):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = butter(order, [low, high], btype='band')
-    filtered = filtfilt(b, a, signal)
-    return filtered
+# def bandpass_filter(signal, fs=400, lowcut=0.5, highcut=30, order=4):
+#     nyq = 0.5 * fs
+#     low = lowcut / nyq
+#     high = highcut / nyq
+#     b, a = butter(order, [low, high], btype='band')
+#     filtered = filtfilt(b, a, signal)
+#     return filtered
 
 
-def filter_signal(signal_all_leads):
-    X, Y = signal_all_leads.shape  # X filas, 12 columnas
-    leads__array = np.zeros((X, Y))  # Matriz destino con ceros
+# def filter_signal(signal_all_leads):
+#     X, Y = signal_all_leads.shape  # X filas, 12 columnas
+#     leads__array = np.zeros((X, Y))  # Matriz destino con ceros
 
-    for col in range(Y):
-        signal = signal_all_leads[:, col]  # Extraer columna
-        # Verificar longitud mínima
-        min_length = int(400 * 600 / 1000)
-        if len(signal) < min_length:
-            print(f"Advertencia: Señal en lead {col} tiene longitud {len(signal)} < {min_length}. Saltando procesamiento.")
-            leads__array[:, col] = signal  # Dejar sin filtrar o manejar de otra forma
-            continue
+#     for col in range(Y):
+#         signal = signal_all_leads[:, col]  # Extraer columna
+#         # Verificar longitud mínima
+#         min_length = int(400 * 600 / 1000)
+#         if len(signal) < min_length:
+#             print(f"Advertencia: Señal en lead {col} tiene longitud {len(signal)} < {min_length}. Saltando procesamiento.")
+#             leads__array[:, col] = signal  # Dejar sin filtrar o manejar de otra forma
+#             continue
 
-        signal = apply_median_filter(signal)
-        signal = bandpass_filter(signal)
+#         signal = apply_median_filter(signal)
+#         signal = bandpass_filter(signal)
 
-        leads__array[:, col] = signal
+#         leads__array[:, col] = signal
 
-    return leads__array
+#     return leads__array
 
 def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal = filter_signal(all_lead_signal)
