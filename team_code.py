@@ -240,7 +240,7 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
 
     if obtain_test_metrics:
         # Test
-        model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth')))
+        model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth'),weights_only=True))
         model.eval()
         test_loss = 0
         test_probs, test_labels = [], []
@@ -326,7 +326,7 @@ def train_model(data_folder, model_folder, verbose):
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(signals,labels,model_folder,obtain_test_metrics=False)
+    train_and_save_model(signals,labels,model_folder,obtain_test_metrics=True)
     
     if verbose:
         print('Done.')
@@ -340,7 +340,7 @@ def load_model(model_folder, verbose):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = ChagasClassifier().to(device)
-    model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth')))
+    model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth'),weights_only=True))
 
     return model
 
