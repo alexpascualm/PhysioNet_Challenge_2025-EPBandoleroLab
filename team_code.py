@@ -283,7 +283,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=5)
+    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
     
     num_records = len(records)
 
@@ -320,7 +320,16 @@ def train_model(data_folder, model_folder, verbose):
         print('Training the model on the data...')
 
     signals = np.stack(signals, axis=0)
+    print(signals.shape)
+    print(labels.shape)
 
+    # Apply data augmentation
+    if verbose:
+        print('Applying data augmentation...')
+    n_augmentations = 3  # Number of augmented samples per original sample
+    signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
+
+    print(signals.shape)
     print(labels.shape)
 
     # Create a folder for the model if it does not already exist.
@@ -539,6 +548,81 @@ def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
     
     # Devolver la lista completa de registros seleccionados
     return positive_records + selected_negatives
+
+
+import numpy as np
+import os
+
+# Data Augmentation Functions
+def add_noise(ecg, noise_level=0.05):
+    """Add Gaussian noise to ECG signal."""
+    noise = np.random.normal(0, noise_level, ecg.shape)
+    return ecg + noise
+
+def time_shift(ecg, max_shift=200):
+    """Shift ECG signal in time (circular shift)."""
+    shift = np.random.randint(-max_shift, max_shift)
+    return np.roll(ecg, shift, axis=-1)
+
+def scale_amplitude(ecg, scale_range=(0.8, 1.2)):
+    """Scale the amplitude of ECG signal."""
+    scale = np.random.uniform(scale_range[0], scale_range[1])
+    return ecg * scale
+
+def time_warp(ecg, warp_factor=0.1):
+    """Apply time warping by stretching/compressing time axis."""
+    n_samples, n_leads, signal_length = ecg.shape
+    time_points = np.linspace(0, signal_length - 1, signal_length)
+    warped_ecg = np.zeros_like(ecg)
+    
+    for i in range(n_samples):
+        for j in range(n_leads):
+            warp = np.random.uniform(-warp_factor, warp_factor)
+            new_time = time_points * (1 + warp)
+            new_time = np.clip(new_time, 0, signal_length - 1)
+            warped_ecg[i, j] = np.interp(time_points, new_time, ecg[i, j])
+    return warped_ecg
+
+def augment_ecg_data(ecg_data, labels, n_augmentations=5):
+    """
+    Generate augmented ECG samples and corresponding labels.
+    Args:
+        ecg_data: Input ECG data of shape (n_samples, 12, 4096)
+        labels: Corresponding labels of shape (n_samples,)
+        n_augmentations: Number of augmented samples per original sample
+    Returns:
+        Augmented ECG data of shape (n_samples * (n_augmentations + 1), 12, 4096)
+        Augmented labels of shape (n_samples * (n_augmentations + 1),)
+    """
+    n_samples, n_leads, signal_length = ecg_data.shape
+    augmented_data = []
+    augmented_labels = []
+    
+    for i in range(n_samples):
+        original_ecg = ecg_data[i:i+1]  # Shape (1, 12, 4096)
+        original_label = labels[i]
+        augmented_data.append(original_ecg)  # Include original sample
+        augmented_labels.append(original_label)
+        
+        for _ in range(n_augmentations):
+            aug_ecg = original_ecg.copy()
+            
+            # Randomly apply augmentations
+            if np.random.rand() > 0.3:
+                aug_ecg = add_noise(aug_ecg, noise_level=0.05)
+            if np.random.rand() > 0.3:
+                aug_ecg = time_shift(aug_ecg, max_shift=200)
+            if np.random.rand() > 0.3:
+                aug_ecg = scale_amplitude(aug_ecg, scale_range=(0.8, 1.2))
+            if np.random.rand() > 0.3:
+                aug_ecg = time_warp(aug_ecg, warp_factor=0.1)
+            
+            augmented_data.append(aug_ecg)
+            augmented_labels.append(original_label)  # Same label for augmented sample
+    
+    augmented_data = np.vstack(augmented_data)
+    augmented_labels = np.array(augmented_labels)
+    return augmented_data, augmented_labels
 
 
 
