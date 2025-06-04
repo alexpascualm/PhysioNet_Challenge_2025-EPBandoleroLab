@@ -1,12 +1,10 @@
-# Python example code for the George B. Moody PhysioNet Challenge 2025
-
-## What's in this repository?
+# EPBandoleroLab code for the George B. Moody PhysioNet Challenge 2025
 
 ## What's in this repository?
 
 This repository is based on the official example provided for the [George B. Moody PhysioNet Challenge 2025](https://physionetchallenges.org/2025/). It initially illustrated how to format a Python entry for the Challenge.
 
-The current version has been significantly modified by **EPBandoleroLab**, from the **EPAnalytics group** at the **ITACA Institute**, **Universitat Politècnica de València**. Our team has extended the original code with:
+The current version has been significantly modified by **EPBandoleroLab**, from the **EP Analytics group** at the **ITACA Institute**, **Universitat Politècnica de València**. Our team has extended the original code with:
 
 - Preprocessing and cleaning of the dataset.
 - Filtering of training records to ensure data quality and consistency.

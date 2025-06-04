@@ -97,6 +97,7 @@ class ChagasClassifier(nn.Module):
         attn_output = self.transformer(transformer_in).mean(dim=1)  # [batch, 512]
         combined = torch.cat([cnn_features.mean(dim=2), attn_output], dim=1)  # [batch, 1024]
         return self.classifier(combined)
+
     
 class FocalLoss(nn.Module):
     def __init__(self, pos_weight, alpha=0.5, gamma=2.0):
@@ -323,14 +324,14 @@ def train_model(data_folder, model_folder, verbose):
     print(signals.shape)
     print(labels.shape)
 
-    # Apply data augmentation
-    if verbose:
-        print('Applying data augmentation...')
-    n_augmentations = 3  # Number of augmented samples per original sample
-    signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
+    # # Apply data augmentation
+    # if verbose:
+    #     print('Applying data augmentation...')
+    # n_augmentations = 3  # Number of augmented samples per original sample
+    # signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
 
-    print(signals.shape)
-    print(labels.shape)
+    # print(signals.shape)
+    # print(labels.shape)
 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
