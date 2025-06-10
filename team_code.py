@@ -649,4 +649,102 @@ def augment_ecg_data(ecg_data, labels, n_augmentations=5):
     return augmented_data, augmented_labels
 
 
+# Filterning Functions
+from scipy.signal import medfilt
+def remove_baseline_wander(signal, fs, window_time=0.2):
+    window_size = int(fs * window_time)
+    # Ensure odd window size
+    if window_size % 2 == 0:
+        window_size += 1
+    # Apply median filter
+    y = medfilt(signal, kernel_size=window_size)
+    # Subtract baseline wander
+    filt_signal = signal - y
+    return filt_signal
 
+import pywt # Wavelet package
+
+def wavelet_filter(senal_entrada, wavelet='coif4', nivel=2):
+
+    # Sacada de un libro de procesamiento de electrocardiogramas
+
+    """
+    Filtra una señal utilizando transformada Wavelet.
+
+    Parámetros:
+        senal_entrada (array-like): Señal de entrada a filtrar.
+        wavelet (str): Familia de wavelet a usar (por defecto 'coif4').
+        nivel (int): Número de niveles de descomposición (por defecto 7).
+    
+    Retorna:
+        senal_filtrada (numpy array): Señal filtrada reconstruida.
+    """
+    # Descomponer la señal usando wavelet y niveles especificados
+    coeficientes = pywt.wavedec(senal_entrada, wavelet, level=nivel)
+    
+    # Filtrado: Eliminamos los detalles (coeficientes 'd') manteniendo aproximaciones ('a')
+    # Nota: Esto corresponde al componente de baja frecuencia.
+    for i in range(1, len(coeficientes)):
+        coeficientes[i] = np.zeros_like(coeficientes[i])
+    
+    # Reconstrucción de la señal
+    senal_filtrada = pywt.waverec(coeficientes, wavelet)
+    
+    # Ajustar la longitud en caso de que haya cambiado
+    senal_filtrada = senal_filtrada[:len(senal_entrada)]
+    
+    
+    return senal_filtrada
+
+def filter_median_wavelet(ecg_signal, fs=500, level=2, wavelet='coif4'):
+    # First remove baseline wander and then filter
+    ecg_signal = remove_baseline_wander(signal = ecg_signal, fs=fs, window_time=0.2)
+    ecg_signal = wavelet_filter(ecg_signal, wavelet = wavelet, nivel=level)
+    return ecg_signal
+
+
+
+# VCG to ECG
+# Dower transform
+def ecg_to_vcg(ecg):
+    # Dimensiones ECG (input):   (5000, 12)
+    # Dimensiones VCG (output):   (1000, 3)
+    T = np.array([[-0.172, -0.074,  0.122,  0.231, 0.239, 0.194,  0.156, -0.010],
+                  [0.057,  -0.019, -0.106, -0.022, 0.041, 0.048, -0.227,  0.887],
+                  [-0.229,  -0.310, -0.246, -0.063, 0.055, 0.108,  0.022,  0.102]])
+
+    # Seleccionar las columnas apropiadas para ecg_1 y ecg_2
+    #ecg = np.transpose(ecg, (0,2,1))
+    ecg_1 = ecg[:, 6:]
+    ecg_2 = ecg[:, :2]
+
+   
+
+    # Concatenar ecg_1 y ecg_2 a lo largo del eje 2 (columnas)
+    ecg_red = np.concatenate([ecg_1, ecg_2], axis=1)
+
+    ecg_red = np.transpose(ecg_red,(1,0) )
+
+
+    # Realizar la multiplicación matricial
+    vcg = np.matmul(T, ecg_red)
+
+    return vcg
+
+
+
+# Padded ECG signal to VCG (use this directly)
+def paddedEcg_to_vcg(ecg_padded):
+    # Input: ECG signal (4096, 12)
+    # Output: VCG signal (4096, 3)
+
+    # Initialize filtered signal container
+    filtered = np.zeros_like(ecg_padded)
+    # Filter
+    for lead_idx in range(ecg_padded.shape[1]):
+        filtered[:, lead_idx] = filter_median_wavelet(ecg_signal = ecg_padded[:, lead_idx], fs = 400)
+    
+    # VCG transform
+    vcg = ecg_to_vcg(filtered)
+
+    return vcg
