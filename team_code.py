@@ -28,6 +28,7 @@ import numpy as np
 from collections import Counter, defaultdict
 import math
 import random
+import pickle
 
 
 PROB_THRESHOLD = 0.6
@@ -60,19 +61,19 @@ class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
-            nn.Conv1d(12, 64, 3, padding=1),
+            nn.Conv1d(12, 64, 10, padding=1),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.MaxPool1d(2),
-            nn.Conv1d(64, 128, 3, padding=1),
+            nn.Conv1d(64, 128, 10, padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.MaxPool1d(2),
-            nn.Conv1d(128, 256, 3, padding=1),
+            nn.Conv1d(128, 256, 10, padding=1),
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.MaxPool1d(2),
-            nn.Conv1d(256, 512, 3, padding=1),
+            nn.Conv1d(256, 512, 10, padding=1),
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.AdaptiveAvgPool1d(10)  # Secuencia de longitud 10
@@ -297,6 +298,7 @@ def train_model(data_folder, model_folder, verbose):
 
     labels = np.zeros(num_records, dtype=bool)
     signals = []
+    sources = []
 
     # Iterate over the records.
     for i in range(num_records):
@@ -310,10 +312,13 @@ def train_model(data_folder, model_folder, verbose):
         labels[i] = load_label(record)
 
         signal_data = load_signals(record)
+        source = load_source(record)
+
         signal = signal_data[0]
         signal = preprocess_12_lead_signal(signal)
         
         signals.append(signal)
+        sources.append(source)
 
  
     # Train the models.
@@ -321,8 +326,26 @@ def train_model(data_folder, model_folder, verbose):
         print('Training the model on the data...')
 
     signals = np.stack(signals, axis=0)
-    print(signals.shape)
-    print(labels.shape)
+
+    # signals = np.array(signals, dtype=object)
+    # print("Sigue Furulando")
+    # print(signals.shape)
+    # print("Shape de signals[0]:", signals[0].shape)
+    # print("Shape de signals[1]:", signals[1].shape)
+    # print(labels.shape)
+
+    # # Paquete con ambos objetos en orden
+    # data = {
+    #     'signals': signals,
+    #     'labels': labels,
+    #     'sources': sources
+    # }
+
+    # # Guardar en archivo pickle
+    # with open('/home/jamon/alejandropm/PhysioNet_Challenge/PhysioNet_Challenge_2025-EPBandoleroLab/Challenge_Data.pkl', 'wb') as f:
+    #     pickle.dump(data, f)
+
+    
 
     # # Apply data augmentation
     # if verbose:
