@@ -28,7 +28,7 @@ import numpy as np
 from collections import Counter, defaultdict
 import math
 import random
-import pickle
+# import pickle
 
 
 PROB_THRESHOLD = 0.6
@@ -61,6 +61,10 @@ class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
+            nn.Conv1d(3, 12, 10, padding=1),
+            nn.BatchNorm1d(12),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
             nn.Conv1d(12, 64, 10, padding=1),
             nn.BatchNorm1d(64),
             nn.ReLU(),
@@ -315,7 +319,10 @@ def train_model(data_folder, model_folder, verbose):
         source = load_source(record)
 
         signal = signal_data[0]
+
         signal = preprocess_12_lead_signal(signal)
+       
+        print("Signal shape:", signal.shape)
         
         signals.append(signal)
         sources.append(source)
@@ -353,8 +360,7 @@ def train_model(data_folder, model_folder, verbose):
     # n_augmentations = 3  # Number of augmented samples per original sample
     # signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
 
-    # print(signals.shape)
-    # print(labels.shape)
+
 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
@@ -477,8 +483,10 @@ def Zero_pad_leads(arr, target_length=4096):
 def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal = filter_signal(all_lead_signal)
 
-    zero_padded_filtered_all_lead_signal = Zero_pad_leads(all_lead_signal)
-    return zero_padded_filtered_all_lead_signal
+    all_lead_signal = Zero_pad_leads(all_lead_signal)
+    all_lead_signal = paddedEcg_to_vcg(all_lead_signal)
+    
+    return all_lead_signal
 
 
 
@@ -738,13 +746,15 @@ def paddedEcg_to_vcg(ecg_padded):
     # Input: ECG signal (4096, 12)
     # Output: VCG signal (4096, 3)
 
-    # Initialize filtered signal container
-    filtered = np.zeros_like(ecg_padded)
-    # Filter
-    for lead_idx in range(ecg_padded.shape[1]):
-        filtered[:, lead_idx] = filter_median_wavelet(ecg_signal = ecg_padded[:, lead_idx], fs = 400)
+    # # Initialize filtered signal container
+    # filtered = np.zeros_like(ecg_padded)
+    # # Filter
+    # for lead_idx in range(ecg_padded.shape[1]):
+    #     filtered[:, lead_idx] = filter_median_wavelet(ecg_signal = ecg_padded[:, lead_idx], fs = 400)
     
     # VCG transform
-    vcg = ecg_to_vcg(filtered)
+    vcg = ecg_to_vcg(ecg_padded)
+
+    vcg = np.transpose(vcg, (1, 0))  # Transpose to match expected output shape (3, 4096)
 
     return vcg
