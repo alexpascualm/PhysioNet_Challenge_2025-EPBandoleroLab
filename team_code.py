@@ -713,14 +713,18 @@ def filter_median_wavelet(ecg_signal, fs=500, level=2, wavelet='coif4'):
 
 
 # VCG to ECG
-# Dower transform
-def ecg_to_vcg(ecg):
+
+def ecg_to_vcg(ecg, tr='dower'):
     # Dimensiones ECG (input):   (5000, 12)
     # Dimensiones VCG (output):   (1000, 3)
-    T = np.array([[-0.172, -0.074,  0.122,  0.231, 0.239, 0.194,  0.156, -0.010],
-                  [0.057,  -0.019, -0.106, -0.022, 0.041, 0.048, -0.227,  0.887],
-                  [-0.229,  -0.310, -0.246, -0.063, 0.055, 0.108,  0.022,  0.102]])
-
+    if tr == 'dower':
+        T = np.array([[-0.172, -0.074,  0.122,  0.231, 0.239, 0.194,  0.156, -0.010],
+                    [0.057,  -0.019, -0.106, -0.022, 0.041, 0.048, -0.227,  0.887],
+                    [-0.229,  -0.310, -0.246, -0.063, 0.055, 0.108,  0.022,  0.102]])
+    if tr == 'kors':
+        T = np.array([[ -0.13, 0.05, -0.01, 0.14, 0.06, 0.54, 0.38, -0.07],
+                      [0.06, -0.02, -0.05, 0.06, -0.17, 0.13, -0.07, 0.93],
+                      [-0.43, -0.06, -0.14, -0.20, -0.11, 0.31, 0.11, -0.23]])
     # Seleccionar las columnas apropiadas para ecg_1 y ecg_2
     #ecg = np.transpose(ecg, (0,2,1))
     ecg_1 = ecg[:, 6:]
@@ -736,6 +740,8 @@ def ecg_to_vcg(ecg):
 
     # Realizar la multiplicación matricial
     vcg = np.matmul(T, ecg_red)
+
+    vcg = np.transpose(vcg, (1, 0))  # Transpose to match expected output shape (3, 4096)
 
     return vcg
 
@@ -755,6 +761,5 @@ def paddedEcg_to_vcg(ecg_padded):
     # VCG transform
     vcg = ecg_to_vcg(ecg_padded)
 
-    vcg = np.transpose(vcg, (1, 0))  # Transpose to match expected output shape (3, 4096)
 
     return vcg
