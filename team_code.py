@@ -241,8 +241,9 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
         scheduler.step(val_challenge_score)
         
         # Detección de overfitting
-        if train_challenge_score - val_challenge_score > 0.1:  # Umbral arbitrario para detectar overfitting
-            print("Warning: Potential overfitting detected (Train Challenge Score significantly higher than Val)")
+        if train_challenge_score - val_challenge_score > 0.1 or train_auprc - val_auprc > 0.06:  # Umbral arbitrario para detectar overfitting
+            print("Warning: Potential overfitting detected (Train Challenge metrics significantly higher than Val)")
+            break
 
     if obtain_test_metrics:
         # Test
@@ -296,13 +297,18 @@ def train_model(data_folder, model_folder, verbose):
     if num_records == 0:
         raise FileNotFoundError('No data were provided.')
 
-    # Extract the features and labels from the data.
+   # Extract the features and labels from the data.
     if verbose:
         print('Extracting features and labels from the data...')
 
     labels = np.zeros(num_records, dtype=bool)
     signals = []
-    sources = []
+    probability_list = []
+    source_list = []
+    age_list = []
+    sex_list = []
+    get_sampling_frequency_list = []
+
 
     # Iterate over the records.
     for i in range(num_records):
@@ -316,42 +322,36 @@ def train_model(data_folder, model_folder, verbose):
         labels[i] = load_label(record)
 
         signal_data = load_signals(record)
-        source = load_source(record)
-
         signal = signal_data[0]
-
         signal = preprocess_12_lead_signal(signal)
-       
-        print("Signal shape:", signal.shape)
-        
         signals.append(signal)
-        sources.append(source)
 
- 
-    # Train the models.
-    if verbose:
-        print('Training the model on the data...')
+        probability_list.append(get_probability(load_header(record),allow_missing=True))
+        source_list.append(load_source(record))
+        age_list.append(load_age(record))
+        sex_list.append(load_sex(record))
+        get_sampling_frequency_list.append(get_sampling_frequency(load_header(record)))
+
 
     signals = np.stack(signals, axis=0)
 
     # signals = np.array(signals, dtype=object)
-    # print("Sigue Furulando")
-    # print(signals.shape)
-    # print("Shape de signals[0]:", signals[0].shape)
-    # print("Shape de signals[1]:", signals[1].shape)
-    # print(labels.shape)
-
+    
     # # Paquete con ambos objetos en orden
     # data = {
-    #     'signals': signals,
-    #     'labels': labels,
-    #     'sources': sources
+    #     'record': records,
+    #     'signal': signals,
+    #     'label': labels,
+    #     'probability': probability_list,
+    #     'source': source_list,
+    #     'age': age_list,
+    #     'sex': sex_list,
+    #     'sampling_frequency': get_sampling_frequency_list,
+        
     # }
-
     # # Guardar en archivo pickle
     # with open('/home/jamon/alejandropm/PhysioNet_Challenge/PhysioNet_Challenge_2025-EPBandoleroLab/Challenge_Data.pkl', 'wb') as f:
     #     pickle.dump(data, f)
-
     
 
     # # Apply data augmentation
@@ -422,7 +422,7 @@ def run_model(record, model, verbose):
 #
 ################################################################################
 
-def Zero_pad_leads(arr, target_length=4096):
+def Zero_pad_leads(arr, target_length=2048):
     X, Y = arr.shape  # X filas, 12 columnas
     padded_array = np.zeros((target_length, Y))  # Matriz destino con ceros
     
