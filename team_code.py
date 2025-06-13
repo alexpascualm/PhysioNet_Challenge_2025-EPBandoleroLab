@@ -526,9 +526,9 @@ def adjust_length_ecg_1024(arr):
     signals.append(signal1) 
     
     if isinstance(signal4,np.ndarray):
-        signals.extend(signal2, signal3, signal4)
+        signals.extend([signal2, signal3, signal4])
     elif isinstance(signal3,np.ndarray):
-        signals.extend(signal2, signal3)
+        signals.extend([signal2, signal3])
     elif isinstance(signal2,np.ndarray):
         signals.append(signal2)
 
