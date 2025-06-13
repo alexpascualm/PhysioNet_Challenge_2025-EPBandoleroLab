@@ -453,7 +453,7 @@ def Zero_pad_leads(arr, target_length=4096):
 
     return padded_array
 
-def adjust_length_ecg2048(arr):
+def adjust_length_ecg_2048(arr):
     
     target_length=2048
     X, Y = arr.shape  # X filas, 12 columnas
@@ -477,7 +477,7 @@ def adjust_length_ecg2048(arr):
             signal2 = 0
             
     signals.append(signal1)
-    if signal2 != 0:
+    if isinstance(signal2,np.ndarray):
         signals.append(signal2)
     return signals
 
@@ -525,11 +525,11 @@ def adjust_length_ecg_1024(arr):
 
     signals.append(signal1) 
     
-    if signal4 != 0:
+    if isinstance(signal4,np.ndarray):
         signals.extend(signal2, signal3, signal4)
-    elif signal3 != 0:
+    elif isinstance(signal3,np.ndarray):
         signals.extend(signal2, signal3)
-    elif signal2 != 0:
+    elif isinstance(signal2,np.ndarray):
         signals.append(signal2)
 
     return signals
