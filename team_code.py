@@ -29,6 +29,8 @@ from collections import Counter, defaultdict
 import math
 import random
 # import pickle
+from scipy.signal import resample_poly
+
 
 
 PROB_THRESHOLD = 0.6
@@ -323,17 +325,29 @@ def train_model(data_folder, model_folder, verbose):
 
         signal_data = load_signals(record)
         signal = signal_data[0]
+        # Resample the signal to 400 Hz if 
+        sampling_frequency = get_sampling_frequency(load_header(record))
+        source = load_source(record)
+
+        if sampling_frequency != 400:
+            print(f'Resampling {record}/{source} from {sampling_frequency} Hz to 400 Hz...')
+            print(f'{signal.shape}')
+            signal = resample_poly(signal, 400, sampling_frequency, axis=0)
+            print(f'{signal.shape}')
+
         signal = preprocess_12_lead_signal(signal)
         signals.append(signal)
 
         probability_list.append(get_probability(load_header(record),allow_missing=True))
-        source_list.append(load_source(record))
+        source_list.append(source)
         age_list.append(load_age(record))
         sex_list.append(load_sex(record))
         get_sampling_frequency_list.append(get_sampling_frequency(load_header(record)))
 
 
     signals = np.stack(signals, axis=0)
+    print(f'Signals shape: {signals.shape}')
+    print(f'Labels shape: {labels.shape}')
 
     # signals = np.array(signals, dtype=object)
     
@@ -422,7 +436,7 @@ def run_model(record, model, verbose):
 #
 ################################################################################
 
-def Zero_pad_leads(arr, target_length=2048):
+def Zero_pad_leads(arr, target_length=4096):
     X, Y = arr.shape  # X filas, 12 columnas
     padded_array = np.zeros((target_length, Y))  # Matriz destino con ceros
     
@@ -518,7 +532,7 @@ def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
     positive_records = []
     age_sex_distribution = []
     for rec in records:
-        if load_label(rec) == 1:
+        if load_label(rec) == 1: # Seleccionar solo samitrops
             head = load_header(rec)
             age = get_age(head)
             sex = get_sex(head)
@@ -537,7 +551,7 @@ def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
     
     # Agrupar negativos por combinación (edad en lustros, sexo)
     negative_by_combination = defaultdict(list)
-    for rec in negative_candidates:
+    for rec in negative_candidates: #Seleccionar solo europeos o tambien code (Si son PTB resamplear)?
         head = load_header(rec)
         age = get_age(head)
         sex = get_sex(head)
