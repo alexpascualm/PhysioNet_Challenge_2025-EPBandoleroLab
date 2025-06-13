@@ -453,6 +453,86 @@ def Zero_pad_leads(arr, target_length=4096):
 
     return padded_array
 
+def adjust_length_ecg2048(arr):
+    
+    target_length=2048
+    X, Y = arr.shape  # X filas, 12 columnas
+    signal1 = np.zeros((target_length, Y))  # Matriz destino con ceros
+    signal2 = np.zeros((target_length, Y))  # Matriz destino con ceros
+    signals = list()
+    
+    for col in range(Y):
+        col_data = arr[:, col]  # Extraer columna
+        length = len(col_data)
+        
+        if length < target_length:
+            break
+
+        elif length > 1.5*target_length: # Its bigger than target but not double, overlapping
+            signal1[:, col] = col_data[:target_length] # Take the first target_length
+            signal2[:, col] = col_data[-target_length:] # Take the last
+        
+        else:
+            signal1[:, col] = col_data[:target_length] # Only take the first
+            signal2 = 0
+            
+    signals.append(signal1)
+    if signal2 != 0:
+        signals.append(signal2)
+    return signals
+
+def adjust_length_ecg_1024(arr):
+    
+    target_length = 1024
+    X, Y = arr.shape  # X filas, 12 columnas
+    signal1 = np.zeros((target_length, Y))  # Matriz destino con ceros
+    signal2 = np.zeros((target_length, Y))  # Matriz destino con ceros
+    signal3 = np.zeros((target_length, Y))  # Matriz destino con ceros
+    signal4 = np.zeros((target_length, Y))  # Matriz destino con ceros
+    signals = list()
+    
+    for col in range(Y):
+        col_data = arr[:, col]  # Extraer columna
+        length = len(col_data)
+        
+        if length < target_length:
+            print("Señal corta! Registra más, cabrón")
+            break
+
+        elif length >= 4*target_length: # If its bigger than two times we do two splits
+            signal1[:, col] = col_data[:target_length]
+            signal2[:, col] = col_data[target_length:2*target_length]
+            signal3[:, col] = col_data[2*target_length:3*target_length]
+            signal4[:, col] = col_data[3*target_length:4*target_length]
+
+        elif length >= 3*target_length: # If its bigger than two times we do two splits
+            signal1[:, col] = col_data[:target_length]
+            signal2[:, col] = col_data[target_length:2*target_length]
+            signal3[:, col] = col_data[2*target_length:3*target_length]
+            signal4 = 0
+
+        elif length > 1.5*target_length: # Its bigger than target but not double, overlapping
+            signal1[:, col] = col_data[:target_length] # Take the first target_length
+            signal2[:, col] = col_data[-target_length:] # Take the last
+            signal3 = 0
+            signal4 = 0
+        
+        else:
+            signal1[:, col] = col_data[:target_length] # Only take the first
+            signal2 = 0
+            signal3 = 0
+            signal4 = 0
+
+    signals.append(signal1) 
+    
+    if signal4 != 0:
+        signals.extend(signal2, signal3, signal4)
+    elif signal3 != 0:
+        signals.extend(signal2, signal3)
+    elif signal2 != 0:
+        signals.append(signal2)
+
+    return signals
 
 # def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
 #     short_window = int(fs * short_window_ms / 1000)
