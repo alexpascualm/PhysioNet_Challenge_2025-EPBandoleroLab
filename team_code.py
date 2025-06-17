@@ -23,23 +23,218 @@ from sklearn.model_selection import train_test_split
 from scipy.signal import medfilt, butter, filtfilt
 
 import numpy as np
-# from sklearn.metrics import classification_report
+
 
 from collections import Counter, defaultdict
 import math
 import random
-# import pickle
 from scipy.signal import resample_poly
 
+# import pickle
 
 
 PROB_THRESHOLD = 0.6
+BATCH_SIZE = 128
+
+################################################################################
+#
+# TODO
+#
+################################################################################
+
+def set_all_seeds(seed=42):
+    # Python
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+    # NumPy
+    np.random.seed(seed)
+
+    # PyTorch
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU
+
+    # Deterministic operations in cudnn
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # For reproducibility in DataLoader
+    def seed_worker(worker_id):
+        worker_seed = seed + worker_id
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    return seed_worker
+
+# Llama a la función al principio
+seed = 123
+worker_seed_fn = set_all_seeds(seed)
+
+
 
 ################################################################################
 #
 # Required functions. Edit these functions to add your code, but do not change the arguments for the functions.
 #
 ################################################################################
+
+# Train your models. This function is *required*. You should edit this function to add your code, but do *not* change the arguments
+# of this function. If you do not train one of the models, then you can return None for the model.
+def train_model(data_folder, model_folder, verbose):
+    # Find the data files.
+    if verbose:
+        print('Finding the Challenge data...')
+
+    # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
+
+    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
+    
+    num_records = len(records)
+
+    if num_records == 0:
+        raise FileNotFoundError('No data were provided.')
+
+   # Extract the features and labels from the data.
+    if verbose:
+        print('Extracting features and labels from the data...')
+
+    labels = np.zeros(num_records, dtype=bool)
+    signals = []
+    probability_list = []
+    source_list = []
+    age_list = []
+    sex_list = []
+    get_sampling_frequency_list = []
+
+
+    # Iterate over the records.
+    for i in range(num_records):
+        if verbose:
+            width = len(str(num_records))
+            print(f'- {i+1:>{width}}/{num_records}: {records[i]}...')
+        
+        # record = os.path.join(data_folder, records[i]) # Not needed if obtain_balanced_train_dataset() used
+        record = records[i]
+
+        labels[i] = load_label(record)
+
+        signal_data = load_signals(record)
+        signal = signal_data[0]
+        # Resample the signal to 400 Hz if 
+        sampling_frequency = get_sampling_frequency(load_header(record))
+        source = load_source(record)
+
+        if sampling_frequency != 400:
+            signal = resample_poly(signal, 400, sampling_frequency, axis=0)
+
+        signal = preprocess_12_lead_signal(signal)
+        signals.append(signal)
+
+        probability_list.append(get_probability(load_header(record),allow_missing=True))
+        source_list.append(source)
+        age_list.append(load_age(record))
+        sex_list.append(load_sex(record))
+        get_sampling_frequency_list.append(get_sampling_frequency(load_header(record)))
+
+
+    signals = np.stack(signals, axis=0)
+    print(f'Signals shape: {signals.shape}')
+    print(f'Labels shape: {labels.shape}')
+
+    # signals = np.array(signals, dtype=object)
+    
+    # # Paquete con ambos objetos en orden
+    # data = {
+    #     'record': records,
+    #     'signal': signals,
+    #     'label': labels,
+    #     'probability': probability_list,
+    #     'source': source_list,
+    #     'age': age_list,
+    #     'sex': sex_list,
+    #     'sampling_frequency': get_sampling_frequency_list,
+        
+    # }
+    # # Guardar en archivo pickle
+    # with open('/home/jamon/alejandropm/PhysioNet_Challenge/PhysioNet_Challenge_2025-EPBandoleroLab/Challenge_Data.pkl', 'wb') as f:
+    #     pickle.dump(data, f)
+    
+
+    # # Apply data augmentation
+    # if verbose:
+    #     print('Applying data augmentation...')
+    # n_augmentations = 3  # Number of augmented samples per original sample
+    # signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
+
+
+
+    # Create a folder for the model if it does not already exist.
+    os.makedirs(model_folder, exist_ok=True)
+
+    train_and_save_model(signals,labels,model_folder,obtain_test_metrics=True)
+    
+    if verbose:
+        print('Done.')
+        print()
+
+
+
+# Load your trained models. This function is *required*. You should edit this function to add your code, but do *not* change the
+# arguments of this function. If you do not train one of the models, then you can return None for the model.
+def load_model(model_folder, verbose):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = ChagasClassifier().to(device)
+    model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth'),weights_only=True))
+
+    return model
+
+# Run your trained model. This function is *required*. You should edit this function to add your code, but do *not* change the
+# arguments of this function.
+def run_model(record, model, verbose):
+    label = np.zeros(1, dtype=bool)
+
+    signal_data = load_signals(record)
+    signal = signal_data[0]
+    signal = preprocess_12_lead_signal(signal)
+    
+    signal = np.stack([signal], axis=0)
+
+    test_dataset = ECGDataset(signal,label)
+    test_loader = DataLoader(test_dataset, batch_size=1)
+    
+    # Get the model outputs.
+    model.eval()
+    binary_output = []
+    probability_output = [] 
+    
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs= inputs.to(device)
+            outputs = model(inputs).squeeze()
+            probs = torch.sigmoid(outputs)
+            probability_output = probs.item()
+            binary_output = probs > PROB_THRESHOLD
+            
+    return binary_output, probability_output
+
+
+################################################################################
+#
+# Optional functions. You can change or remove these functions and/or add new functions.
+#
+################################################################################
+
+################################################################################
+#
+# TODO
+#
+################################################################################
+
 
 # 1. Clase Dataset con preprocesamiento
 class ECGDataset(Dataset):
@@ -142,7 +337,7 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
         X_val, X_test, y_val, y_test = train_test_split(X_aux, y_aux, test_size=0.5, stratify=y_aux, random_state=42)
 
         test_dataset = ECGDataset(X_test, y_test)
-        test_loader = DataLoader(test_dataset, batch_size=128)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,num_workers=4, worker_init_fn=worker_seed_fn)
     else:
         X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)   
     
@@ -151,8 +346,8 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
     val_dataset = ECGDataset(X_val, y_val)
         
     # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size = 128, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=128)
+    train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=True,num_workers=4, worker_init_fn=worker_seed_fn)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE,shuffle=False,num_workers=4, worker_init_fn=worker_seed_fn)
     
     
     model = ChagasClassifier().to(device)
@@ -277,166 +472,14 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
         # Imprimir métricas
         print("Test inference")
         print(f"  Test - Loss: {test_loss:.4f}, Challenge Score: {test_challenge_score:.4f}, F1: {test_f1:.4f}, Accuracy: {test_accuracy:.4f},  AUC: {test_auc:.4f}, AUPRC: {test_auprc:.4f}")
-    
-#############################################################################################################################################
-
-
-# Train your models. This function is *required*. You should edit this function to add your code, but do *not* change the arguments
-# of this function. If you do not train one of the models, then you can return None for the model.
-
-# Train your model.
-def train_model(data_folder, model_folder, verbose):
-    # Find the data files.
-    if verbose:
-        print('Finding the Challenge data...')
-
-    # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
-
-    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
-    
-    num_records = len(records)
-
-    if num_records == 0:
-        raise FileNotFoundError('No data were provided.')
-
-   # Extract the features and labels from the data.
-    if verbose:
-        print('Extracting features and labels from the data...')
-
-    labels = np.zeros(num_records, dtype=bool)
-    signals = []
-    probability_list = []
-    source_list = []
-    age_list = []
-    sex_list = []
-    get_sampling_frequency_list = []
-
-
-    # Iterate over the records.
-    for i in range(num_records):
-        if verbose:
-            width = len(str(num_records))
-            print(f'- {i+1:>{width}}/{num_records}: {records[i]}...')
-        
-        # record = os.path.join(data_folder, records[i]) # Not needed if obtain_balanced_train_dataset() used
-        record = records[i]
-
-        labels[i] = load_label(record)
-
-        signal_data = load_signals(record)
-        signal = signal_data[0]
-        # Resample the signal to 400 Hz if 
-        sampling_frequency = get_sampling_frequency(load_header(record))
-        source = load_source(record)
-
-        if sampling_frequency != 400:
-            print(f'Resampling {record}/{source} from {sampling_frequency} Hz to 400 Hz...')
-            print(f'{signal.shape}')
-            signal = resample_poly(signal, 400, sampling_frequency, axis=0)
-            print(f'{signal.shape}')
-
-        signal = preprocess_12_lead_signal(signal)
-        signals.append(signal)
-
-        probability_list.append(get_probability(load_header(record),allow_missing=True))
-        source_list.append(source)
-        age_list.append(load_age(record))
-        sex_list.append(load_sex(record))
-        get_sampling_frequency_list.append(get_sampling_frequency(load_header(record)))
-
-
-    signals = np.stack(signals, axis=0)
-    print(f'Signals shape: {signals.shape}')
-    print(f'Labels shape: {labels.shape}')
-
-    # signals = np.array(signals, dtype=object)
-    
-    # # Paquete con ambos objetos en orden
-    # data = {
-    #     'record': records,
-    #     'signal': signals,
-    #     'label': labels,
-    #     'probability': probability_list,
-    #     'source': source_list,
-    #     'age': age_list,
-    #     'sex': sex_list,
-    #     'sampling_frequency': get_sampling_frequency_list,
-        
-    # }
-    # # Guardar en archivo pickle
-    # with open('/home/jamon/alejandropm/PhysioNet_Challenge/PhysioNet_Challenge_2025-EPBandoleroLab/Challenge_Data.pkl', 'wb') as f:
-    #     pickle.dump(data, f)
-    
-
-    # # Apply data augmentation
-    # if verbose:
-    #     print('Applying data augmentation...')
-    # n_augmentations = 3  # Number of augmented samples per original sample
-    # signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
-
-
-
-    # Create a folder for the model if it does not already exist.
-    os.makedirs(model_folder, exist_ok=True)
-
-    train_and_save_model(signals,labels,model_folder,obtain_test_metrics=True)
-    
-    if verbose:
-        print('Done.')
-        print()
-
-
-
-# Load your trained models. This function is *required*. You should edit this function to add your code, but do *not* change the
-# arguments of this function. If you do not train one of the models, then you can return None for the model.
-def load_model(model_folder, verbose):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = ChagasClassifier().to(device)
-    model.load_state_dict(torch.load(os.path.join(model_folder, 'best_model.pth'),weights_only=True))
-
-    return model
-
-# Run your trained model. This function is *required*. You should edit this function to add your code, but do *not* change the
-# arguments of this function.
-def run_model(record, model, verbose):
-    label = np.zeros(1, dtype=bool)
-
-    signal_data = load_signals(record)
-    signal = signal_data[0]
-    signal = preprocess_12_lead_signal(signal)
-    
-    signal = np.stack([signal], axis=0)
-
-    test_dataset = ECGDataset(signal,label)
-    test_loader = DataLoader(test_dataset, batch_size=1)
-    
-    # Get the model outputs.
-    model.eval()
-    binary_output = []
-    probability_output = [] 
-    
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs= inputs.to(device)
-            outputs = model(inputs).squeeze()
-            probs = torch.sigmoid(outputs)
-            probability_output = probs.item()
-            binary_output = probs > PROB_THRESHOLD
-            
-    return binary_output, probability_output
-
 
 ################################################################################
 #
-# Optional functions. You can change or remove these functions and/or add new functions.
+# TODO
 #
 ################################################################################
 
-def Zero_pad_leads(arr, target_length=4096):
+def Zero_pad_leads(arr, target_length=1024):
     X, Y = arr.shape  # X filas, 12 columnas
     padded_array = np.zeros((target_length, Y))  # Matriz destino con ceros
     
@@ -534,6 +577,7 @@ def adjust_length_ecg_1024(arr):
 
     return signals
 
+
 # def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
 #     short_window = int(fs * short_window_ms / 1000)
 #     long_window = int(fs * long_window_ms / 1000)
@@ -574,185 +618,11 @@ def adjust_length_ecg_1024(arr):
 
 #     return leads__array
 
-def preprocess_12_lead_signal(all_lead_signal):
-    # all_lead_signal = filter_signal(all_lead_signal)
-
-    all_lead_signal = Zero_pad_leads(all_lead_signal)
-    all_lead_signal = paddedEcg_to_vcg(all_lead_signal)
-    
-    return all_lead_signal
-
-
-
-# Agrupar edades en intervalos de 5 años
-def age_group(age):
-    return (age // 5) * 5
-
-def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
-    """
-    Selecciona registros positivos y negativos de una base de datos, con una proporción
-    de negativos aproximadamente igual a negative_to_positive_ratio * len(positivos).
-    
-    Args:
-        path (str): Ruta al directorio con los registros.
-        negative_to_positive_ratio (float): Proporción deseada de negativos respecto a positivos (default=1.0).
-    
-    Returns:
-        list: Lista de registros seleccionados (positivos + negativos).
-    
-    Raises:
-        ValueError: Si no hay registros positivos en la base de datos.
-    """
-    # Obtener todos los registros
-    records = find_records(path, '.hea')
-    for i in range(len(records)):
-        records[i] = os.path.join(path, records[i])
-    
-    # Obtener registros positivos con su edad y sexo
-    positive_records = []
-    age_sex_distribution = []
-    for rec in records:
-        if load_label(rec) == 1: # Seleccionar solo samitrops
-            head = load_header(rec)
-            age = get_age(head)
-            sex = get_sex(head)
-            positive_records.append(rec)
-            age_sex_distribution.append((age_group(age), sex))
-    
-    num_positives = len(positive_records)
-    if num_positives == 0:
-        raise ValueError("No hay registros positivos en la base de datos")
-    
-    # Distribución de positivos por combinación (edad en lustros, sexo)
-    positive_distribution = Counter(age_sex_distribution)
-    
-    # Obtener candidatos negativos
-    negative_candidates = [rec for rec in records if load_label(rec) == 0]
-    
-    # Agrupar negativos por combinación (edad en lustros, sexo)
-    negative_by_combination = defaultdict(list)
-    for rec in negative_candidates: #Seleccionar solo europeos o tambien code (Si son PTB resamplear)?
-        head = load_header(rec)
-        age = get_age(head)
-        sex = get_sex(head)
-        comb = (age_group(age), sex)
-        # Solo consideramos combinaciones presentes en los positivos
-        if comb in positive_distribution:
-            negative_by_combination[comb].append(rec)
-    
-    # Barajar los negativos dentro de cada combinación para selección aleatoria
-    for comb in negative_by_combination:
-        random.shuffle(negative_by_combination[comb])
-    
-    # Calcular el número total deseado de negativos
-    total_desired_negatives = math.ceil(negative_to_positive_ratio * num_positives)
-    
-    # Inicializar estructuras para la selección
-    selected_negatives = []
-    selected_counts = {comb: 0 for comb in positive_distribution}
-    
-    # Seleccionar negativos hasta alcanzar el total deseado o agotar candidatos
-    while len(selected_negatives) < total_desired_negatives and any(negative_by_combination[comb] for comb in positive_distribution):
-        # Encontrar la combinación con la menor proporción respecto a lo deseado
-        min_ratio = float('inf')
-        best_comb = None
-        for comb in positive_distribution:
-            if negative_by_combination[comb]:  # Si hay negativos disponibles
-                desired = negative_to_positive_ratio * positive_distribution[comb]
-                ratio_current = selected_counts[comb] / desired if desired > 0 else float('inf')
-                if ratio_current < min_ratio:
-                    min_ratio = ratio_current
-                    best_comb = comb
-        
-        if best_comb is None:
-            break  # No hay más combinaciones con negativos disponibles
-        
-        # Seleccionar un negativo de la combinación elegida
-        neg_rec = negative_by_combination[best_comb].pop()
-        selected_negatives.append(neg_rec)
-        selected_counts[best_comb] += 1
-    
-    # Devolver la lista completa de registros seleccionados
-    return positive_records + selected_negatives
-
-
-import numpy as np
-import os
-
-# Data Augmentation Functions
-def add_noise(ecg, noise_level=0.05):
-    """Add Gaussian noise to ECG signal."""
-    noise = np.random.normal(0, noise_level, ecg.shape)
-    return ecg + noise
-
-def time_shift(ecg, max_shift=200):
-    """Shift ECG signal in time (circular shift)."""
-    shift = np.random.randint(-max_shift, max_shift)
-    return np.roll(ecg, shift, axis=-1)
-
-def scale_amplitude(ecg, scale_range=(0.8, 1.2)):
-    """Scale the amplitude of ECG signal."""
-    scale = np.random.uniform(scale_range[0], scale_range[1])
-    return ecg * scale
-
-def time_warp(ecg, warp_factor=0.1):
-    """Apply time warping by stretching/compressing time axis."""
-    n_samples, n_leads, signal_length = ecg.shape
-    time_points = np.linspace(0, signal_length - 1, signal_length)
-    warped_ecg = np.zeros_like(ecg)
-    
-    for i in range(n_samples):
-        for j in range(n_leads):
-            warp = np.random.uniform(-warp_factor, warp_factor)
-            new_time = time_points * (1 + warp)
-            new_time = np.clip(new_time, 0, signal_length - 1)
-            warped_ecg[i, j] = np.interp(time_points, new_time, ecg[i, j])
-    return warped_ecg
-
-def augment_ecg_data(ecg_data, labels, n_augmentations=5):
-    """
-    Generate augmented ECG samples and corresponding labels.
-    Args:
-        ecg_data: Input ECG data of shape (n_samples, 12, 4096)
-        labels: Corresponding labels of shape (n_samples,)
-        n_augmentations: Number of augmented samples per original sample
-    Returns:
-        Augmented ECG data of shape (n_samples * (n_augmentations + 1), 12, 4096)
-        Augmented labels of shape (n_samples * (n_augmentations + 1),)
-    """
-    n_samples, n_leads, signal_length = ecg_data.shape
-    augmented_data = []
-    augmented_labels = []
-    
-    for i in range(n_samples):
-        original_ecg = ecg_data[i:i+1]  # Shape (1, 12, 4096)
-        original_label = labels[i]
-        augmented_data.append(original_ecg)  # Include original sample
-        augmented_labels.append(original_label)
-        
-        for _ in range(n_augmentations):
-            aug_ecg = original_ecg.copy()
-            
-            # Randomly apply augmentations
-            if np.random.rand() > 0.3:
-                aug_ecg = add_noise(aug_ecg, noise_level=0.05)
-            if np.random.rand() > 0.3:
-                aug_ecg = time_shift(aug_ecg, max_shift=200)
-            if np.random.rand() > 0.3:
-                aug_ecg = scale_amplitude(aug_ecg, scale_range=(0.8, 1.2))
-            if np.random.rand() > 0.3:
-                aug_ecg = time_warp(aug_ecg, warp_factor=0.1)
-            
-            augmented_data.append(aug_ecg)
-            augmented_labels.append(original_label)  # Same label for augmented sample
-    
-    augmented_data = np.vstack(augmented_data)
-    augmented_labels = np.array(augmented_labels)
-    return augmented_data, augmented_labels
 
 
 # Filterning Functions
 from scipy.signal import medfilt
+
 def remove_baseline_wander(signal, fs, window_time=0.2):
     window_size = int(fs * window_time)
     # Ensure odd window size
@@ -857,3 +727,193 @@ def paddedEcg_to_vcg(ecg_padded):
 
 
     return vcg
+
+
+
+def preprocess_12_lead_signal(all_lead_signal):
+    # all_lead_signal = filter_signal(all_lead_signal)
+
+    all_lead_signal = Zero_pad_leads(all_lead_signal)
+    all_lead_signal = paddedEcg_to_vcg(all_lead_signal)
+    
+    return all_lead_signal
+
+################################################################################
+#
+# TODO
+#
+################################################################################
+
+# Agrupar edades en intervalos de 5 años
+def age_group(age):
+    return (age // 5) * 5
+
+def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
+    """
+    Selecciona registros positivos y negativos de una base de datos, con una proporción
+    de negativos aproximadamente igual a negative_to_positive_ratio * len(positivos).
+    
+    Args:
+        path (str): Ruta al directorio con los registros.
+        negative_to_positive_ratio (float): Proporción deseada de negativos respecto a positivos (default=1.0).
+    
+    Returns:
+        list: Lista de registros seleccionados (positivos + negativos).
+    
+    Raises:
+        ValueError: Si no hay registros positivos en la base de datos.
+    """
+    # Obtener todos los registros
+    records = find_records(path, '.hea')
+    for i in range(len(records)):
+        records[i] = os.path.join(path, records[i])
+    
+    # Obtener registros positivos con su edad y sexo
+    positive_records = []
+    age_sex_distribution = []
+    for rec in records:
+        if load_label(rec) == 1: # Seleccionar solo samitrops
+            head = load_header(rec)
+            age = get_age(head)
+            sex = get_sex(head)
+            positive_records.append(rec)
+            age_sex_distribution.append((age_group(age), sex))
+    
+    num_positives = len(positive_records)
+    if num_positives == 0:
+        raise ValueError("No hay registros positivos en la base de datos")
+    
+    # Distribución de positivos por combinación (edad en lustros, sexo)
+    positive_distribution = Counter(age_sex_distribution)
+    
+    # Obtener candidatos negativos
+    negative_candidates = [rec for rec in records if load_label(rec) == 0]
+    
+    # Agrupar negativos por combinación (edad en lustros, sexo)
+    negative_by_combination = defaultdict(list)
+    for rec in negative_candidates: #Seleccionar solo europeos o tambien code (Si son PTB resamplear)?
+        head = load_header(rec)
+        age = get_age(head)
+        sex = get_sex(head)
+        comb = (age_group(age), sex)
+        # Solo consideramos combinaciones presentes en los positivos
+        if comb in positive_distribution:
+            negative_by_combination[comb].append(rec)
+    
+    # Barajar los negativos dentro de cada combinación para selección aleatoria
+    for comb in negative_by_combination:
+        random.shuffle(negative_by_combination[comb])
+    
+    # Calcular el número total deseado de negativos
+    total_desired_negatives = math.ceil(negative_to_positive_ratio * num_positives)
+    
+    # Inicializar estructuras para la selección
+    selected_negatives = []
+    selected_counts = {comb: 0 for comb in positive_distribution}
+    
+    # Seleccionar negativos hasta alcanzar el total deseado o agotar candidatos
+    while len(selected_negatives) < total_desired_negatives and any(negative_by_combination[comb] for comb in positive_distribution):
+        # Encontrar la combinación con la menor proporción respecto a lo deseado
+        min_ratio = float('inf')
+        best_comb = None
+        for comb in positive_distribution:
+            if negative_by_combination[comb]:  # Si hay negativos disponibles
+                desired = negative_to_positive_ratio * positive_distribution[comb]
+                ratio_current = selected_counts[comb] / desired if desired > 0 else float('inf')
+                if ratio_current < min_ratio:
+                    min_ratio = ratio_current
+                    best_comb = comb
+        
+        if best_comb is None:
+            break  # No hay más combinaciones con negativos disponibles
+        
+        # Seleccionar un negativo de la combinación elegida
+        neg_rec = negative_by_combination[best_comb].pop()
+        selected_negatives.append(neg_rec)
+        selected_counts[best_comb] += 1
+    
+    # Devolver la lista completa de registros seleccionados
+    return positive_records + selected_negatives
+
+
+################################################################################
+#
+# TODO
+#
+################################################################################
+
+# # Data Augmentation Functions
+# def add_noise(ecg, noise_level=0.05):
+#     """Add Gaussian noise to ECG signal."""
+#     noise = np.random.normal(0, noise_level, ecg.shape)
+#     return ecg + noise
+
+# def time_shift(ecg, max_shift=200):
+#     """Shift ECG signal in time (circular shift)."""
+#     shift = np.random.randint(-max_shift, max_shift)
+#     return np.roll(ecg, shift, axis=-1)
+
+# def scale_amplitude(ecg, scale_range=(0.8, 1.2)):
+#     """Scale the amplitude of ECG signal."""
+#     scale = np.random.uniform(scale_range[0], scale_range[1])
+#     return ecg * scale
+
+# def time_warp(ecg, warp_factor=0.1):
+#     """Apply time warping by stretching/compressing time axis."""
+#     n_samples, n_leads, signal_length = ecg.shape
+#     time_points = np.linspace(0, signal_length - 1, signal_length)
+#     warped_ecg = np.zeros_like(ecg)
+    
+#     for i in range(n_samples):
+#         for j in range(n_leads):
+#             warp = np.random.uniform(-warp_factor, warp_factor)
+#             new_time = time_points * (1 + warp)
+#             new_time = np.clip(new_time, 0, signal_length - 1)
+#             warped_ecg[i, j] = np.interp(time_points, new_time, ecg[i, j])
+#     return warped_ecg
+
+# def augment_ecg_data(ecg_data, labels, n_augmentations=5):
+#     """
+#     Generate augmented ECG samples and corresponding labels.
+#     Args:
+#         ecg_data: Input ECG data of shape (n_samples, 12, 4096)
+#         labels: Corresponding labels of shape (n_samples,)
+#         n_augmentations: Number of augmented samples per original sample
+#     Returns:
+#         Augmented ECG data of shape (n_samples * (n_augmentations + 1), 12, 4096)
+#         Augmented labels of shape (n_samples * (n_augmentations + 1),)
+#     """
+#     n_samples, n_leads, signal_length = ecg_data.shape
+#     augmented_data = []
+#     augmented_labels = []
+    
+#     for i in range(n_samples):
+#         original_ecg = ecg_data[i:i+1]  # Shape (1, 12, 4096)
+#         original_label = labels[i]
+#         augmented_data.append(original_ecg)  # Include original sample
+#         augmented_labels.append(original_label)
+        
+#         for _ in range(n_augmentations):
+#             aug_ecg = original_ecg.copy()
+            
+#             # Randomly apply augmentations
+#             if np.random.rand() > 0.3:
+#                 aug_ecg = add_noise(aug_ecg, noise_level=0.05)
+#             if np.random.rand() > 0.3:
+#                 aug_ecg = time_shift(aug_ecg, max_shift=200)
+#             if np.random.rand() > 0.3:
+#                 aug_ecg = scale_amplitude(aug_ecg, scale_range=(0.8, 1.2))
+#             if np.random.rand() > 0.3:
+#                 aug_ecg = time_warp(aug_ecg, warp_factor=0.1)
+            
+#             augmented_data.append(aug_ecg)
+#             augmented_labels.append(original_label)  # Same label for augmented sample
+    
+#     augmented_data = np.vstack(augmented_data)
+#     augmented_labels = np.array(augmented_labels)
+#     return augmented_data, augmented_labels
+
+
+
+
+
