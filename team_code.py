@@ -249,7 +249,8 @@ class ECGDataset(Dataset):
         ecg = self.X[idx]
 
         # Normalización por derivación
-        ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8) 
+        ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
+        # ecg = (ecg - ecg.mean(axis=0)) 
 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
 
@@ -258,10 +259,10 @@ class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
-            nn.Conv1d(3, 12, 10, padding=1),
-            nn.BatchNorm1d(12),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
+            # nn.Conv1d(3, 12, 10, padding=1),
+            # nn.BatchNorm1d(12),
+            # nn.ReLU(),
+            # nn.MaxPool1d(2),
             nn.Conv1d(12, 64, 10, padding=1),
             nn.BatchNorm1d(64),
             nn.ReLU(),
@@ -734,13 +735,13 @@ def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal = filter_signal(all_lead_signal)
 
     all_lead_signal = Zero_pad_leads(all_lead_signal)
-    all_lead_signal = paddedEcg_to_vcg(all_lead_signal)
+    # all_lead_signal = paddedEcg_to_vcg(all_lead_signal)
     
     return all_lead_signal
 
 ################################################################################
 #
-# TODO
+# TODO Comment Data Selection Functions 
 #
 ################################################################################
 
@@ -838,7 +839,7 @@ def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
 
 ################################################################################
 #
-# TODO
+# TODO / Comment Data Augmentation Functions if finally used
 #
 ################################################################################
 
