@@ -621,59 +621,61 @@ def adjust_length_ecg_1024(arr):
 
 
 
-# Filterning Functions
-from scipy.signal import medfilt
-
-def remove_baseline_wander(signal, fs, window_time=0.2):
-    window_size = int(fs * window_time)
-    # Ensure odd window size
-    if window_size % 2 == 0:
-        window_size += 1
-    # Apply median filter
-    y = medfilt(signal, kernel_size=window_size)
-    # Subtract baseline wander
-    filt_signal = signal - y
-    return filt_signal
-
+# Filtering function
+import numpy as np
 import pywt # Wavelet package
+def wavelet_ecg_filter(signal, wavelet='db4', mode='symmetric', 
+                   remove_approx=True, remove_details=[8,7]):
 
-def wavelet_filter(senal_entrada, wavelet='coif4', nivel=2):
-
-    # Sacada de un libro de procesamiento de electrocardiogramas
+    # Use in chagas code -> filtered_ecg_signal = waveltet_filter(ecg_signal)
+    # INPUT: Lead signal (2048, 1)
+    # OUTPUT: Filtered lead signal (2048,1)
+    # Removes baseline wander and high frequency noise preserving the morphology 
+    #   using wavelet decomposition
 
     """
-    Filtra una señal utilizando transformada Wavelet.
-
-    Parámetros:
-        senal_entrada (array-like): Señal de entrada a filtrar.
-        wavelet (str): Familia de wavelet a usar (por defecto 'coif4').
-        nivel (int): Número de niveles de descomposición (por defecto 7).
-    
-    Retorna:
-        senal_filtrada (numpy array): Señal filtrada reconstruida.
+    Parameters:
+    -----------
+    signal : array-like
+        Input signal to process
+    wavelet : str, optional
+        Wavelet to use (default: 'db4')
+    mode : str, optional
+        Signal extension mode (default: 'symmetric')
+    remove_approx : bool, optional
+        Whether to remove the approximation coefficients (default: True)
+    remove_details : list or None, optional
+        Which detail levels to remove (e.g., [1,2] removes D1 and D2) (default: [8,7])
+    plot_Flag: bool, optional
+        Whether to plot the components (default: False)
+    figsize : tuple, optional
+        Figure size (default: (30, 5))
+        
     """
-    # Descomponer la señal usando wavelet y niveles especificados
-    coeficientes = pywt.wavedec(senal_entrada, wavelet, level=nivel)
+    # Perform wavelet decomposition
+    coeffs = pywt.wavedec(signal, wavelet=wavelet, mode=mode, level=8)
+    levels = len(coeffs) - 1
     
-    # Filtrado: Eliminamos los detalles (coeficientes 'd') manteniendo aproximaciones ('a')
-    # Nota: Esto corresponde al componente de baja frecuencia.
-    for i in range(1, len(coeficientes)):
-        coeficientes[i] = np.zeros_like(coeficientes[i])
+    # Initialize dictionary to store components
+    components = {}
     
-    # Reconstrucción de la señal
-    senal_filtrada = pywt.waverec(coeficientes, wavelet)
+    # Create modified coefficients for filtering
+    filtered_coeffs = [c.copy() for c in coeffs]
     
-    # Ajustar la longitud en caso de que haya cambiado
-    senal_filtrada = senal_filtrada[:len(senal_entrada)]
+    # Remove specified components
+    if remove_approx:
+        filtered_coeffs[0] = np.zeros_like(filtered_coeffs[0])
     
+    if remove_details is not None:
+        for level in remove_details:
+            if 1 <= level <= levels:
+                filtered_coeffs[level] = np.zeros_like(filtered_coeffs[level])
     
-    return senal_filtrada
-
-def filter_median_wavelet(ecg_signal, fs=500, level=2, wavelet='coif4'):
-    # First remove baseline wander and then filter
-    ecg_signal = remove_baseline_wander(signal = ecg_signal, fs=fs, window_time=0.2)
-    ecg_signal = wavelet_filter(ecg_signal, wavelet = wavelet, nivel=level)
-    return ecg_signal
+    # Reconstruct filtered signal
+    filtered_signal = pywt.waverec(filtered_coeffs, wavelet=wavelet, mode=mode)
+    filtered_signal = filtered_signal[:len(signal)]  # Match original length
+    
+    return filtered_signal
 
 
 
@@ -712,21 +714,31 @@ def ecg_to_vcg(ecg, tr='dower'):
 
 
 
-# Padded ECG signal to VCG (use this directly)
-def paddedEcg_to_vcg(ecg_padded):
-    # Input: ECG signal (4096, 12)
-    # Output: VCG signal (4096, 3)
+# Complete ECG signal to VCG (use this directly)
+def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalize = False, center = False):
+    # Input: ECG signal (4096, 12) or (2048, 12) or (1024, 12)
+    # Output: VCG signal (4096, 3) or (2048, 3) or (1024, 3)
 
-    # # Initialize filtered signal container
-    # filtered = np.zeros_like(ecg_padded)
-    # # Filter
-    # for lead_idx in range(ecg_padded.shape[1]):
-    #     filtered[:, lead_idx] = filter_median_wavelet(ecg_signal = ecg_padded[:, lead_idx], fs = 400)
+    if filter:
+        # Initialize filtered signal container
+        filtered = np.zeros_like(padded_ecg)
+        # Filter
+        for lead_idx in range(padded_ecg.shape[1]):
+            filtered[:, lead_idx] = wavelet_ecg_filter(ecg_signal = padded_ecg[:, lead_idx], fs = 400)
+    else:
+        filtered = padded_ecg
     
-    # VCG transform
-    vcg = ecg_to_vcg(ecg_padded)
-
-
+    # Normalize or center before VCG, to preserve spatial relations in VCG
+    if normalize:
+        filtered = (filtered - filtered.mean(axis=0)) / filtered.std(axis=0)
+    if center:
+        filtered = (filtered - filtered.mean(axis=0))
+    
+    # Transform to VCG
+    if vcg:
+        vcg = ecg_to_vcg(filtered)
+    
+    
     return vcg
 
 
