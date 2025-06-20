@@ -23,6 +23,7 @@ from sklearn.model_selection import train_test_split
 from scipy.signal import medfilt, butter, filtfilt
 
 import numpy as np
+import pandas as pd
 
 
 from collections import Counter, defaultdict
@@ -88,7 +89,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
+    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=5)
     
     num_records = len(records)
 
@@ -99,14 +100,8 @@ def train_model(data_folder, model_folder, verbose):
     if verbose:
         print('Extracting features and labels from the data...')
 
-    labels = np.zeros(num_records, dtype=bool)
-    signals = []
-    probability_list = []
-    source_list = []
-    age_list = []
-    sex_list = []
-    get_sampling_frequency_list = []
 
+    train_data_records = []  # Lista para almacenar los registros de datos
 
     # Iterate over the records.
     for i in range(num_records):
@@ -117,62 +112,45 @@ def train_model(data_folder, model_folder, verbose):
         # record = os.path.join(data_folder, records[i]) # Not needed if obtain_balanced_train_dataset() used
         record = records[i]
 
-        labels[i] = load_label(record)
-
+        label = load_label(record)
         signal_data = load_signals(record)
         signal = signal_data[0]
-        # Resample the signal to 400 Hz if 
         sampling_frequency = get_sampling_frequency(load_header(record))
         source = load_source(record)
 
         if sampling_frequency != 400:
             signal = resample_poly(signal, 400, sampling_frequency, axis=0)
 
-        signal = preprocess_12_lead_signal(signal)
-        signals.append(signal)
+        processed_signals = preprocess_12_lead_signal(signal)  # Lista de señales (np.ndarray)
 
-        probability_list.append(get_probability(load_header(record),allow_missing=True))
-        source_list.append(source)
-        age_list.append(load_age(record))
-        sex_list.append(load_sex(record))
-        get_sampling_frequency_list.append(get_sampling_frequency(load_header(record)))
-
-
-    signals = np.stack(signals, axis=0)
-    print(f'Signals shape: {signals.shape}')
-    print(f'Labels shape: {labels.shape}')
-
-    # signals = np.array(signals, dtype=object)
-    
-    # # Paquete con ambos objetos en orden
-    # data = {
-    #     'record': records,
-    #     'signal': signals,
-    #     'label': labels,
-    #     'probability': probability_list,
-    #     'source': source_list,
-    #     'age': age_list,
-    #     'sex': sex_list,
-    #     'sampling_frequency': get_sampling_frequency_list,
+        # Añadir una entrada por cada señal procesada
         
-    # }
-    # # Guardar en archivo pickle
-    # with open('/home/jamon/alejandropm/PhysioNet_Challenge/PhysioNet_Challenge_2025-EPBandoleroLab/Challenge_Data.pkl', 'wb') as f:
-    #     pickle.dump(data, f)
+       
+        # print("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
+        for j, processed_signal in enumerate(processed_signals):
+                train_data_records.append({
+                    'record': record,
+                    'variant_index': j,  # índice dentro del listado devuelto por preprocess
+                    'signal': processed_signal,
+                    'label': label,
+                    'probability': get_probability(load_header(record), allow_missing=True),
+                    'source': source,
+                    'age': load_age(record),
+                    'sex': load_sex(record),
+                    'sampling_frequency': sampling_frequency
+                })
+                
     
-
-    # # Apply data augmentation
-    # if verbose:
-    #     print('Applying data augmentation...')
-    # n_augmentations = 3  # Number of augmented samples per original sample
-    # signals, labels = augment_ecg_data(signals, labels, n_augmentations=n_augmentations)
-
-
-
+    # Convertir la lista de diccionarios en un DataFrame
+    train_df = pd.DataFrame(train_data_records)
+    print(f'Number of records in the training set: {len(train_df)}')
+    
+ 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(signals,labels,model_folder,obtain_test_metrics=True)
+    print("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY")
+    train_and_save_model(train_df,model_folder,obtain_test_metrics=True)
     
     if verbose:
         print('Done.')
@@ -198,6 +176,8 @@ def run_model(record, model, verbose):
     signal_data = load_signals(record)
     signal = signal_data[0]
     signal = preprocess_12_lead_signal(signal)
+
+    signal = signal[0]  # Use the first processed signal FOR NOW
     
     signal = np.stack([signal], axis=0)
 
@@ -249,7 +229,7 @@ class ECGDataset(Dataset):
         ecg = self.X[idx]
 
         # Normalización por derivación
-        ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
+        # ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
         # ecg = (ecg - ecg.mean(axis=0)) 
 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
@@ -259,10 +239,10 @@ class ChagasClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
-            # nn.Conv1d(3, 12, 10, padding=1),
-            # nn.BatchNorm1d(12),
-            # nn.ReLU(),
-            # nn.MaxPool1d(2),
+            nn.Conv1d(3, 12, 10, padding=1),
+            nn.BatchNorm1d(12),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
             nn.Conv1d(12, 64, 10, padding=1),
             nn.BatchNorm1d(64),
             nn.ReLU(),
@@ -323,7 +303,7 @@ class FocalLoss(nn.Module):
 
 
 # 3. Función de entrenamiento y guardado
-def train_and_save_model(X, y, model_folder,obtain_test_metrics):
+def train_and_save_model(df, model_folder,obtain_test_metrics):
     # Configuración inicial
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -331,6 +311,13 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
         print("GPU Available")
     else:
         print("GPU not available")
+    
+    X = df['signal'].tolist()  # Lista de señales
+    print(f"Number of signals: {len(X)}")
+    y = df['label'].tolist()    # Lista de etiquetas
+    print(f"Number of labels: {len(y)}")
+    print(y[0])
+    print(y[1])
 
     # Split de datos
     if obtain_test_metrics:
@@ -340,7 +327,45 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
         test_dataset = ECGDataset(X_test, y_test)
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,num_workers=4, worker_init_fn=worker_seed_fn)
     else:
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)   
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42) 
+
+    # # Paso 2: Obtener pacientes únicos y su label (estratificación) REVISAR!!!!!!!!!!!!!!!!!
+    # # Usamos el primer label asociado a cada paciente (registro)
+    # patient_df = df.groupby('record').first().reset_index()
+    # patients = patient_df['record'].values
+    # patient_labels = patient_df['label'].values  # Asume que se puede estratificar con esto
+
+    # # Paso 3: Split sin que un paciente esté en más de un conjunto
+    # if obtain_test_metrics:
+    #     # Split paciente → train/val/test sin mezcla
+    #     p_train, p_aux, y_train_p, y_aux_p = train_test_split(
+    #         patients, patient_labels, test_size=0.3, stratify=patient_labels, random_state=42)
+    #     p_val, p_test, y_val_p, y_test_p = train_test_split(
+    #         p_aux, y_aux_p, test_size=0.5, stratify=y_aux_p, random_state=42)
+    # else:
+    #     p_train, p_val, y_train_p, y_val_p = train_test_split(
+    #         patients, patient_labels, test_size=0.2, stratify=patient_labels, random_state=42)
+
+    # # Paso 4: Crear los subconjuntos a partir del DataFrame original
+    # df_train = df[df['record'].isin(p_train)].reset_index(drop=True)
+    # df_val   = df[df['record'].isin(p_val)].reset_index(drop=True)
+    # df_test  = df[df['record'].isin(p_test)].reset_index(drop=True) if obtain_test_metrics else None
+
+    # # Paso 5: Extraer X e y para cada conjunto
+    # X_train, y_train = df_train['signal'].tolist(), df_train['label'].tolist()
+    # X_val, y_val     = df_val['signal'].tolist(),   df_val['label'].tolist()
+    # if obtain_test_metrics:
+    #     X_test, y_test = df_test['signal'].tolist(), df_test['label'].tolist()
+
+    # # Paso 6: Crear datasets y dataloaders
+    # train_dataset = ECGDataset(X_train, y_train)
+    # val_dataset   = ECGDataset(X_val, y_val)
+    # train_loader  = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, worker_init_fn=worker_seed_fn)
+    # val_loader    = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, worker_init_fn=worker_seed_fn)
+
+    # if obtain_test_metrics:
+    #     test_dataset = ECGDataset(X_test, y_test)
+    #     test_loader  = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, worker_init_fn=worker_seed_fn)  # HASTA AQUI !!!!!!!!!!!!!!!!!!!
     
     # Crear datasets
     train_dataset = ECGDataset(X_train, y_train)
@@ -348,7 +373,7 @@ def train_and_save_model(X, y, model_folder,obtain_test_metrics):
         
     # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=True,num_workers=4, worker_init_fn=worker_seed_fn)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE,shuffle=False,num_workers=4, worker_init_fn=worker_seed_fn)
+    val_loader = DataLoader(val_dataset, batch_size = BATCH_SIZE,shuffle=False,num_workers=4, worker_init_fn=worker_seed_fn)
     
     
     model = ChagasClassifier().to(device)
@@ -680,7 +705,6 @@ def wavelet_ecg_filter(signal, wavelet='db4', mode='symmetric',
 
 
 # VCG to ECG
-
 def ecg_to_vcg(ecg, tr='dower'):
     # Dimensiones ECG (input):   (5000, 12)
     # Dimensiones VCG (output):   (1000, 3)
@@ -715,7 +739,7 @@ def ecg_to_vcg(ecg, tr='dower'):
 
 
 # Complete ECG signal to VCG (use this directly)
-def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalize = False, center = False):
+def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalization = 'normalize'):
     # Input: ECG signal (4096, 12) or (2048, 12) or (1024, 12)
     # Output: VCG signal (4096, 3) or (2048, 3) or (1024, 3)
 
@@ -724,14 +748,14 @@ def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalize = False, cent
         filtered = np.zeros_like(padded_ecg)
         # Filter
         for lead_idx in range(padded_ecg.shape[1]):
-            filtered[:, lead_idx] = wavelet_ecg_filter(ecg_signal = padded_ecg[:, lead_idx], fs = 400)
+            filtered[:, lead_idx] = wavelet_ecg_filter(signal = padded_ecg[:, lead_idx])
     else:
         filtered = padded_ecg
     
     # Normalize or center before VCG, to preserve spatial relations in VCG
-    if normalize:
-        filtered = (filtered - filtered.mean(axis=0)) / filtered.std(axis=0)
-    if center:
+    if normalization == 'normalize':
+        filtered = (filtered - filtered.mean(axis=0)) / (filtered.std(axis=0) + 1e-8)
+    if normalization == 'center':
         filtered = (filtered - filtered.mean(axis=0))
     
     # Transform to VCG
@@ -744,12 +768,20 @@ def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalize = False, cent
 
 
 def preprocess_12_lead_signal(all_lead_signal):
-    # all_lead_signal = filter_signal(all_lead_signal)
+    # all_lead_signal: np.ndarray con shape [12, N]
 
-    all_lead_signal = Zero_pad_leads(all_lead_signal)
-    # all_lead_signal = paddedEcg_to_vcg(all_lead_signal)
+    # Paso 1: Cortar o segmentar en múltiples señales de shape [12, 2048]
+    signal_segments = adjust_length_ecg_1024(all_lead_signal)  # Lista de arrays [12, 2048]
+
     
-    return all_lead_signal
+
+    # Paso 2: Convertir cada segmento a VCG (u otra representación)
+    processed_segments = [
+       paddedECG_to_vcg(segment, filter=False, normalization='normalize')
+        for segment in signal_segments
+    ]
+ 
+    return processed_segments  # Lista de arrays transformados
 
 ################################################################################
 #
