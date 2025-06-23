@@ -20,7 +20,6 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 
-from scipy.signal import medfilt, butter, filtfilt
 
 import numpy as np
 import pandas as pd
@@ -89,7 +88,7 @@ def train_model(data_folder, model_folder, verbose):
 
     # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
 
-    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=5)
+    records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
     
     num_records = len(records)
 
@@ -121,12 +120,9 @@ def train_model(data_folder, model_folder, verbose):
         if sampling_frequency != 400:
             signal = resample_poly(signal, 400, sampling_frequency, axis=0)
 
-        processed_signals = preprocess_12_lead_signal(signal)  # Lista de señales (np.ndarray)
-
-        # Añadir una entrada por cada señal procesada
+        processed_signals = preprocess_12_lead_signal(signal) 
         
-       
-        # print("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
+        # Añadir una entrada por cada señal procesada
         for j, processed_signal in enumerate(processed_signals):
                 train_data_records.append({
                     'record': record,
@@ -149,7 +145,6 @@ def train_model(data_folder, model_folder, verbose):
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    print("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY")
     train_and_save_model(train_df,model_folder,obtain_test_metrics=True)
     
     if verbose:
@@ -211,7 +206,7 @@ def run_model(record, model, verbose):
 
 ################################################################################
 #
-# TODO
+# TODO Arquitecura del modelo y funciones de entrenamiento
 #
 ################################################################################
 
@@ -312,12 +307,15 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
     else:
         print("GPU not available")
     
-    X = df['signal'].tolist()  # Lista de señales
-    print(f"Number of signals: {len(X)}")
-    y = df['label'].tolist()    # Lista de etiquetas
-    print(f"Number of labels: {len(y)}")
-    print(y[0])
-    print(y[1])
+    X = df['signal'].tolist() # Lista de señales
+    X = np.stack(X, axis=0)
+    # print(X.shape)
+    
+    y = df['label'].tolist() # Lista de etiquetas
+    y = np.array(y, dtype=bool)
+    # print(y.shape)
+
+    
 
     # Split de datos
     if obtain_test_metrics:
@@ -412,7 +410,7 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
             train_labels.extend(labels.cpu().detach().numpy())
         
         train_loss = train_loss/len(train_loader)
-        
+
         # Calcular métricas en el conjunto de entrenamiento
         train_pred_labels = np.array(train_probs) > PROB_THRESHOLD
         train_challenge_score = compute_challenge_score(train_labels, train_probs)
@@ -565,7 +563,7 @@ def adjust_length_ecg_1024(arr):
         length = len(col_data)
         
         if length < target_length:
-            print("Señal corta! Registra más, cabrón")
+            print("Señal corta! Registra más")
             break
 
         elif length >= 4*target_length: # If its bigger than two times we do two splits
@@ -604,50 +602,7 @@ def adjust_length_ecg_1024(arr):
     return signals
 
 
-# def apply_median_filter(signal, fs=400, short_window_ms=200, long_window_ms=600):
-#     short_window = int(fs * short_window_ms / 1000)
-#     long_window = int(fs * long_window_ms / 1000)
-#     if short_window % 2 == 0:
-#         short_window += 1
-#     if long_window % 2 == 0:
-#         long_window += 1
-#     baseline = medfilt(signal, kernel_size=short_window)
-#     baseline = medfilt(baseline, kernel_size=long_window)
-#     return signal - baseline
-
-# def bandpass_filter(signal, fs=400, lowcut=0.5, highcut=30, order=4):
-#     nyq = 0.5 * fs
-#     low = lowcut / nyq
-#     high = highcut / nyq
-#     b, a = butter(order, [low, high], btype='band')
-#     filtered = filtfilt(b, a, signal)
-#     return filtered
-
-
-# def filter_signal(signal_all_leads):
-#     X, Y = signal_all_leads.shape  # X filas, 12 columnas
-#     leads__array = np.zeros((X, Y))  # Matriz destino con ceros
-
-#     for col in range(Y):
-#         signal = signal_all_leads[:, col]  # Extraer columna
-#         # Verificar longitud mínima
-#         min_length = int(400 * 600 / 1000)
-#         if len(signal) < min_length:
-#             print(f"Advertencia: Señal en lead {col} tiene longitud {len(signal)} < {min_length}. Saltando procesamiento.")
-#             leads__array[:, col] = signal  # Dejar sin filtrar o manejar de otra forma
-#             continue
-
-#         signal = apply_median_filter(signal)
-#         signal = bandpass_filter(signal)
-
-#         leads__array[:, col] = signal
-
-#     return leads__array
-
-
-
 # Filtering function
-import numpy as np
 import pywt # Wavelet package
 def wavelet_ecg_filter(signal, wavelet='db4', mode='symmetric', 
                    remove_approx=True, remove_details=[8,7]):
@@ -770,17 +725,16 @@ def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalization = 'normal
 def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal: np.ndarray con shape [12, N]
 
-    # Paso 1: Cortar o segmentar en múltiples señales de shape [12, 2048]
-    signal_segments = adjust_length_ecg_1024(all_lead_signal)  # Lista de arrays [12, 2048]
-
-    
+    # Paso 1: Cortar o segmentar en múltiples señales de shape [12, N]
+    signal_segments = adjust_length_ecg_1024(all_lead_signal)#  Lista de arrays [12, N]
 
     # Paso 2: Convertir cada segmento a VCG (u otra representación)
     processed_segments = [
        paddedECG_to_vcg(segment, filter=False, normalization='normalize')
         for segment in signal_segments
     ]
- 
+    
+
     return processed_segments  # Lista de arrays transformados
 
 ################################################################################
