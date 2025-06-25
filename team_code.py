@@ -139,13 +139,11 @@ def train_model(data_folder, model_folder, verbose):
     
     # Convertir la lista de diccionarios en un DataFrame
     train_df = pd.DataFrame(train_data_records)
-    print(f'Number of records in the training set: {len(train_df)}')
     
- 
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(train_df,model_folder,obtain_test_metrics=True)
+    train_and_save_model(train_df,model_folder,obtain_test_metrics=False)
     
     if verbose:
         print('Done.')
@@ -296,6 +294,12 @@ class FocalLoss(nn.Module):
         return F_loss.mean()
 
 
+# Crear subconjuntos por record
+def get_data_by_patients(df, patient_list):
+    df_subset = df[df['record'].isin(patient_list)]
+    X = np.stack(df_subset['signal'].tolist(), axis=0)
+    y = np.array(df_subset['label'].tolist(), dtype=bool)
+    return X, y
 
 # 3. Función de entrenamiento y guardado
 def train_and_save_model(df, model_folder,obtain_test_metrics):
@@ -306,64 +310,32 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
         print("GPU Available")
     else:
         print("GPU not available")
-    
-    X = df['signal'].tolist() # Lista de señales
-    X = np.stack(X, axis=0)
-    # print(X.shape)
-    
-    y = df['label'].tolist() # Lista de etiquetas
-    y = np.array(y, dtype=bool)
-    # print(y.shape)
 
     
+    # Agrupar por record
+    record = df['record'].unique()
+    train_patients, valtest_patients = train_test_split(
+    record, test_size=0.3, random_state=42
+    )
 
-    # Split de datos
     if obtain_test_metrics:
-        X_train, X_aux, y_train, y_aux = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
-        X_val, X_test, y_val, y_test = train_test_split(X_aux, y_aux, test_size=0.5, stratify=y_aux, random_state=42)
+        val_patients, test_patients = train_test_split(
+            valtest_patients, test_size=0.5, random_state=42
+        )
 
+        X_test, y_test = get_data_by_patients(df, test_patients)
         test_dataset = ECGDataset(X_test, y_test)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False,num_workers=4, worker_init_fn=worker_seed_fn)
+        test_loader = DataLoader(
+            test_dataset, batch_size=BATCH_SIZE, shuffle=False,
+            num_workers=4, worker_init_fn=worker_seed_fn
+        )
     else:
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42) 
+        val_patients = valtest_patients
+        test_patients = []
 
-    # # Paso 2: Obtener pacientes únicos y su label (estratificación) REVISAR!!!!!!!!!!!!!!!!!
-    # # Usamos el primer label asociado a cada paciente (registro)
-    # patient_df = df.groupby('record').first().reset_index()
-    # patients = patient_df['record'].values
-    # patient_labels = patient_df['label'].values  # Asume que se puede estratificar con esto
-
-    # # Paso 3: Split sin que un paciente esté en más de un conjunto
-    # if obtain_test_metrics:
-    #     # Split paciente → train/val/test sin mezcla
-    #     p_train, p_aux, y_train_p, y_aux_p = train_test_split(
-    #         patients, patient_labels, test_size=0.3, stratify=patient_labels, random_state=42)
-    #     p_val, p_test, y_val_p, y_test_p = train_test_split(
-    #         p_aux, y_aux_p, test_size=0.5, stratify=y_aux_p, random_state=42)
-    # else:
-    #     p_train, p_val, y_train_p, y_val_p = train_test_split(
-    #         patients, patient_labels, test_size=0.2, stratify=patient_labels, random_state=42)
-
-    # # Paso 4: Crear los subconjuntos a partir del DataFrame original
-    # df_train = df[df['record'].isin(p_train)].reset_index(drop=True)
-    # df_val   = df[df['record'].isin(p_val)].reset_index(drop=True)
-    # df_test  = df[df['record'].isin(p_test)].reset_index(drop=True) if obtain_test_metrics else None
-
-    # # Paso 5: Extraer X e y para cada conjunto
-    # X_train, y_train = df_train['signal'].tolist(), df_train['label'].tolist()
-    # X_val, y_val     = df_val['signal'].tolist(),   df_val['label'].tolist()
-    # if obtain_test_metrics:
-    #     X_test, y_test = df_test['signal'].tolist(), df_test['label'].tolist()
-
-    # # Paso 6: Crear datasets y dataloaders
-    # train_dataset = ECGDataset(X_train, y_train)
-    # val_dataset   = ECGDataset(X_val, y_val)
-    # train_loader  = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, worker_init_fn=worker_seed_fn)
-    # val_loader    = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, worker_init_fn=worker_seed_fn)
-
-    # if obtain_test_metrics:
-    #     test_dataset = ECGDataset(X_test, y_test)
-    #     test_loader  = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, worker_init_fn=worker_seed_fn)  # HASTA AQUI !!!!!!!!!!!!!!!!!!!
+    
+    X_train, y_train = get_data_by_patients(df, train_patients)
+    X_val, y_val = get_data_by_patients(df, val_patients)
     
     # Crear datasets
     train_dataset = ECGDataset(X_train, y_train)
@@ -693,11 +665,7 @@ def ecg_to_vcg(ecg, tr='dower'):
 
 
 
-# Complete ECG signal to VCG (use this directly)
-def paddedECG_to_vcg(padded_ecg, vcg=True, filter=False, normalization = 'normalize'):
-    # Input: ECG signal (4096, 12) or (2048, 12) or (1024, 12)
-    # Output: VCG signal (4096, 3) or (2048, 3) or (1024, 3)
-
+def signal_segment_to_model_input(padded_ecg, vcg=True, filter=False, normalization = 'normalize'):
     if filter:
         # Initialize filtered signal container
         filtered = np.zeros_like(padded_ecg)
@@ -726,11 +694,11 @@ def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal: np.ndarray con shape [12, N]
 
     # Paso 1: Cortar o segmentar en múltiples señales de shape [12, N]
-    signal_segments = adjust_length_ecg_1024(all_lead_signal)#  Lista de arrays [12, N]
+    signal_segments = adjust_length_ecg_2048(all_lead_signal) #  Lista de arrays [12, N]
 
     # Paso 2: Convertir cada segmento a VCG (u otra representación)
     processed_segments = [
-       paddedECG_to_vcg(segment, filter=False, normalization='normalize')
+       signal_segment_to_model_input(segment, vcg = True, filter=False, normalization='normalize')
         for segment in signal_segments
     ]
     
@@ -834,83 +802,6 @@ def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
     # Devolver la lista completa de registros seleccionados
     return positive_records + selected_negatives
 
-
-################################################################################
-#
-# TODO / Comment Data Augmentation Functions if finally used
-#
-################################################################################
-
-# # Data Augmentation Functions
-# def add_noise(ecg, noise_level=0.05):
-#     """Add Gaussian noise to ECG signal."""
-#     noise = np.random.normal(0, noise_level, ecg.shape)
-#     return ecg + noise
-
-# def time_shift(ecg, max_shift=200):
-#     """Shift ECG signal in time (circular shift)."""
-#     shift = np.random.randint(-max_shift, max_shift)
-#     return np.roll(ecg, shift, axis=-1)
-
-# def scale_amplitude(ecg, scale_range=(0.8, 1.2)):
-#     """Scale the amplitude of ECG signal."""
-#     scale = np.random.uniform(scale_range[0], scale_range[1])
-#     return ecg * scale
-
-# def time_warp(ecg, warp_factor=0.1):
-#     """Apply time warping by stretching/compressing time axis."""
-#     n_samples, n_leads, signal_length = ecg.shape
-#     time_points = np.linspace(0, signal_length - 1, signal_length)
-#     warped_ecg = np.zeros_like(ecg)
-    
-#     for i in range(n_samples):
-#         for j in range(n_leads):
-#             warp = np.random.uniform(-warp_factor, warp_factor)
-#             new_time = time_points * (1 + warp)
-#             new_time = np.clip(new_time, 0, signal_length - 1)
-#             warped_ecg[i, j] = np.interp(time_points, new_time, ecg[i, j])
-#     return warped_ecg
-
-# def augment_ecg_data(ecg_data, labels, n_augmentations=5):
-#     """
-#     Generate augmented ECG samples and corresponding labels.
-#     Args:
-#         ecg_data: Input ECG data of shape (n_samples, 12, 4096)
-#         labels: Corresponding labels of shape (n_samples,)
-#         n_augmentations: Number of augmented samples per original sample
-#     Returns:
-#         Augmented ECG data of shape (n_samples * (n_augmentations + 1), 12, 4096)
-#         Augmented labels of shape (n_samples * (n_augmentations + 1),)
-#     """
-#     n_samples, n_leads, signal_length = ecg_data.shape
-#     augmented_data = []
-#     augmented_labels = []
-    
-#     for i in range(n_samples):
-#         original_ecg = ecg_data[i:i+1]  # Shape (1, 12, 4096)
-#         original_label = labels[i]
-#         augmented_data.append(original_ecg)  # Include original sample
-#         augmented_labels.append(original_label)
-        
-#         for _ in range(n_augmentations):
-#             aug_ecg = original_ecg.copy()
-            
-#             # Randomly apply augmentations
-#             if np.random.rand() > 0.3:
-#                 aug_ecg = add_noise(aug_ecg, noise_level=0.05)
-#             if np.random.rand() > 0.3:
-#                 aug_ecg = time_shift(aug_ecg, max_shift=200)
-#             if np.random.rand() > 0.3:
-#                 aug_ecg = scale_amplitude(aug_ecg, scale_range=(0.8, 1.2))
-#             if np.random.rand() > 0.3:
-#                 aug_ecg = time_warp(aug_ecg, warp_factor=0.1)
-            
-#             augmented_data.append(aug_ecg)
-#             augmented_labels.append(original_label)  # Same label for augmented sample
-    
-#     augmented_data = np.vstack(augmented_data)
-#     augmented_labels = np.array(augmented_labels)
-#     return augmented_data, augmented_labels
 
 
 
