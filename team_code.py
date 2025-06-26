@@ -30,8 +30,6 @@ import math
 import random
 from scipy.signal import resample_poly
 
-# import pickle
-
 
 PROB_THRESHOLD = 0.6
 BATCH_SIZE = 128
@@ -168,31 +166,30 @@ def run_model(record, model, verbose):
 
     signal_data = load_signals(record)
     signal = signal_data[0]
-    signal = preprocess_12_lead_signal(signal)
+    signal_segments = preprocess_12_lead_signal(signal)
 
-    signal = signal[0]  # Use the first processed signal FOR NOW
-    
-    signal = np.stack([signal], axis=0)
+    segments_tensor = np.stack(signal_segments)
+    labels = np.repeat(label, len(signal_segments))
 
-    test_dataset = ECGDataset(signal,label)
+    test_dataset = ECGDataset(segments_tensor, labels)
     test_loader = DataLoader(test_dataset, batch_size=1)
-    
-    # Get the model outputs.
-    model.eval()
-    binary_output = []
-    probability_output = [] 
-    
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    segment_probabilities = []
 
     with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs= inputs.to(device)
+        for inputs, _ in test_loader:
+            inputs = inputs.to(device)
             outputs = model(inputs).squeeze()
-            probs = torch.sigmoid(outputs)
-            probability_output = probs.item()
-            binary_output = probs > PROB_THRESHOLD
-            
+            prob = torch.sigmoid(outputs)
+            segment_probabilities.append(prob.item())
+
+    probability_output = np.mean(segment_probabilities)
+    binary_output = probability_output > PROB_THRESHOLD
+
     return binary_output, probability_output
 
 
@@ -421,6 +418,7 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
         
         # Guardar el mejor modelo basado en el challenge_score de validación
         if val_challenge_score > best_challenge_score:
+            print("New best model found, saving...")
             best_challenge_score = val_challenge_score
             torch.save(model.state_dict(), os.path.join(model_folder, 'best_model.pth'))
             epochs_no_improve = 0
@@ -684,8 +682,7 @@ def signal_segment_to_model_input(padded_ecg, vcg=True, filter=False, normalizat
     # Transform to VCG
     if vcg:
         vcg = ecg_to_vcg(filtered)
-    
-    
+
     return vcg
 
 
@@ -694,7 +691,7 @@ def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal: np.ndarray con shape [12, N]
 
     # Paso 1: Cortar o segmentar en múltiples señales de shape [12, N]
-    signal_segments = adjust_length_ecg_2048(all_lead_signal) #  Lista de arrays [12, N]
+    signal_segments = adjust_length_ecg_1024(all_lead_signal) #  Lista de arrays [12, N]
 
     # Paso 2: Convertir cada segmento a VCG (u otra representación)
     processed_segments = [
