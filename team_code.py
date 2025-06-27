@@ -84,8 +84,6 @@ def train_model(data_folder, model_folder, verbose):
     if verbose:
         print('Finding the Challenge data...')
 
-    # records = find_records(data_folder, '.hea') # Not needed if obtain_balanced_train_dataset() used
-
     records = obtain_balanced_train_dataset(data_folder, negative_to_positive_ratio=1)
     
     num_records = len(records)
@@ -97,7 +95,6 @@ def train_model(data_folder, model_folder, verbose):
     if verbose:
         print('Extracting features and labels from the data...')
 
-
     train_data_records = []  # Lista para almacenar los registros de datos
 
     # Iterate over the records.
@@ -106,7 +103,6 @@ def train_model(data_folder, model_folder, verbose):
             width = len(str(num_records))
             print(f'- {i+1:>{width}}/{num_records}: {records[i]}...')
         
-        # record = os.path.join(data_folder, records[i]) # Not needed if obtain_balanced_train_dataset() used
         record = records[i]
 
         label = load_label(record)
@@ -201,7 +197,7 @@ def run_model(record, model, verbose):
 
 ################################################################################
 #
-# TODO Arquitecura del modelo y funciones de entrenamiento
+# TODO Arquitecura del modelo
 #
 ################################################################################
 
@@ -217,10 +213,6 @@ class ECGDataset(Dataset):
     
     def __getitem__(self, idx):
         ecg = self.X[idx]
-
-        # Normalización por derivación
-        # ecg = (ecg - ecg.mean(axis=0)) / (ecg.std(axis=0) + 1e-8)
-        # ecg = (ecg - ecg.mean(axis=0)) 
 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
 
@@ -248,7 +240,7 @@ class ChagasClassifier(nn.Module):
             nn.Conv1d(256, 512, 10, padding=1),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(10)  # Secuencia de longitud 10
+            nn.AdaptiveAvgPool1d(10) 
         )
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=512, nhead=8, dim_feedforward=1024),
@@ -289,7 +281,13 @@ class FocalLoss(nn.Module):
         # Aplicar Focal Loss
         F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
         return F_loss.mean()
+    
 
+################################################################################
+#
+# TODO Arquitecura del modelo
+#
+################################################################################
 
 # Crear subconjuntos por record
 def get_data_by_patients(df, patient_list):
@@ -503,6 +501,7 @@ def adjust_length_ecg_2048(arr):
         length = len(col_data)
         
         if length < target_length:
+            # signal1 = Zero_pad_leads(arr,target_length=2048)
             break
 
         elif length > 1.5*target_length: # Its bigger than target but not double, overlapping
@@ -533,7 +532,7 @@ def adjust_length_ecg_1024(arr):
         length = len(col_data)
         
         if length < target_length:
-            print("Señal corta! Registra más")
+            # signal1 = Zero_pad_leads(arr,target_length=1024)
             break
 
         elif length >= 4*target_length: # If its bigger than two times we do two splits
@@ -573,59 +572,59 @@ def adjust_length_ecg_1024(arr):
 
 
 # Filtering function
-import pywt # Wavelet package
-def wavelet_ecg_filter(signal, wavelet='db4', mode='symmetric', 
-                   remove_approx=True, remove_details=[8,7]):
+# import pywt # Wavelet package
+# def wavelet_ecg_filter(signal, wavelet='db4', mode='symmetric', 
+#                    remove_approx=True, remove_details=[8,7]):
 
-    # Use in chagas code -> filtered_ecg_signal = waveltet_filter(ecg_signal)
-    # INPUT: Lead signal (2048, 1)
-    # OUTPUT: Filtered lead signal (2048,1)
-    # Removes baseline wander and high frequency noise preserving the morphology 
-    #   using wavelet decomposition
+#     # Use in chagas code -> filtered_ecg_signal = waveltet_filter(ecg_signal)
+#     # INPUT: Lead signal (2048, 1)
+#     # OUTPUT: Filtered lead signal (2048,1)
+#     # Removes baseline wander and high frequency noise preserving the morphology 
+#     #   using wavelet decomposition
 
-    """
-    Parameters:
-    -----------
-    signal : array-like
-        Input signal to process
-    wavelet : str, optional
-        Wavelet to use (default: 'db4')
-    mode : str, optional
-        Signal extension mode (default: 'symmetric')
-    remove_approx : bool, optional
-        Whether to remove the approximation coefficients (default: True)
-    remove_details : list or None, optional
-        Which detail levels to remove (e.g., [1,2] removes D1 and D2) (default: [8,7])
-    plot_Flag: bool, optional
-        Whether to plot the components (default: False)
-    figsize : tuple, optional
-        Figure size (default: (30, 5))
+#     """
+#     Parameters:
+#     -----------
+#     signal : array-like
+#         Input signal to process
+#     wavelet : str, optional
+#         Wavelet to use (default: 'db4')
+#     mode : str, optional
+#         Signal extension mode (default: 'symmetric')
+#     remove_approx : bool, optional
+#         Whether to remove the approximation coefficients (default: True)
+#     remove_details : list or None, optional
+#         Which detail levels to remove (e.g., [1,2] removes D1 and D2) (default: [8,7])
+#     plot_Flag: bool, optional
+#         Whether to plot the components (default: False)
+#     figsize : tuple, optional
+#         Figure size (default: (30, 5))
         
-    """
-    # Perform wavelet decomposition
-    coeffs = pywt.wavedec(signal, wavelet=wavelet, mode=mode, level=8)
-    levels = len(coeffs) - 1
+#     """
+#     # Perform wavelet decomposition
+#     coeffs = pywt.wavedec(signal, wavelet=wavelet, mode=mode, level=8)
+#     levels = len(coeffs) - 1
     
-    # Initialize dictionary to store components
-    components = {}
+#     # Initialize dictionary to store components
+#     components = {}
     
-    # Create modified coefficients for filtering
-    filtered_coeffs = [c.copy() for c in coeffs]
+#     # Create modified coefficients for filtering
+#     filtered_coeffs = [c.copy() for c in coeffs]
     
-    # Remove specified components
-    if remove_approx:
-        filtered_coeffs[0] = np.zeros_like(filtered_coeffs[0])
+#     # Remove specified components
+#     if remove_approx:
+#         filtered_coeffs[0] = np.zeros_like(filtered_coeffs[0])
     
-    if remove_details is not None:
-        for level in remove_details:
-            if 1 <= level <= levels:
-                filtered_coeffs[level] = np.zeros_like(filtered_coeffs[level])
+#     if remove_details is not None:
+#         for level in remove_details:
+#             if 1 <= level <= levels:
+#                 filtered_coeffs[level] = np.zeros_like(filtered_coeffs[level])
     
-    # Reconstruct filtered signal
-    filtered_signal = pywt.waverec(filtered_coeffs, wavelet=wavelet, mode=mode)
-    filtered_signal = filtered_signal[:len(signal)]  # Match original length
+#     # Reconstruct filtered signal
+#     filtered_signal = pywt.waverec(filtered_coeffs, wavelet=wavelet, mode=mode)
+#     filtered_signal = filtered_signal[:len(signal)]  # Match original length
     
-    return filtered_signal
+#     return filtered_signal
 
 
 
@@ -669,13 +668,15 @@ def signal_segment_to_model_input(padded_ecg, vcg=True, filter=False, normalizat
         filtered = np.zeros_like(padded_ecg)
         # Filter
         for lead_idx in range(padded_ecg.shape[1]):
-            filtered[:, lead_idx] = wavelet_ecg_filter(signal = padded_ecg[:, lead_idx])
+            filtered[:, lead_idx] = filtered[:, lead_idx]  # wavelet_ecg_filter(signal = padded_ecg[:, lead_idx])
     else:
         filtered = padded_ecg
     
     # Normalize or center before VCG, to preserve spatial relations in VCG
     if normalization == 'normalize':
         filtered = (filtered - filtered.mean(axis=0)) / (filtered.std(axis=0) + 1e-8)
+        # filtered = filtered / (np.abs(filtered).max() + 1e-8)
+
     if normalization == 'center':
         filtered = (filtered - filtered.mean(axis=0))
     
