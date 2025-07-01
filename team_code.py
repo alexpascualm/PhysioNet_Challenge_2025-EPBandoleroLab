@@ -215,53 +215,103 @@ class ECGDataset(Dataset):
         ecg = self.X[idx]
 
         return torch.tensor(ecg.T, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.float32)
+    
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
 
-# 2. Arquitectura del modelo
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # x tiene shape [seq_len, batch_size, d_model] en el modo por defecto del transformer
+        # o [batch_size, seq_len, d_model] si batch_first=True
+        # Asumiremos batch_first=True para que sea más intuitivo
+        x = x + self.pe[:x.size(1), :].squeeze(1) # Adaptado para batch_first=True
+        return self.dropout(x)
+
 class ChagasClassifier(nn.Module):
-    def __init__(self):
+    def __init__(self, input_len=1024): # Asumimos una longitud de entrada, ej. 1024
         super().__init__()
+        
+        # 1. Extractor de características CNN
         self.cnn = nn.Sequential(
-            nn.Conv1d(3, 12, 10, padding=1),
-            nn.BatchNorm1d(12),
+            nn.Conv1d(12, 32, kernel_size=18, padding=4),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(12, 64, 10, padding=1),
+            nn.MaxPool1d(2), # len -> len/2
+            nn.Conv1d(32, 64, kernel_size=18, padding=4),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(64, 128, 10, padding=1),
+            nn.MaxPool1d(2), # len -> len/4
+            nn.Conv1d(64, 128, kernel_size=18, padding=4),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(128, 256, 10, padding=1),
+            nn.MaxPool1d(4), # len -> len/16
+            nn.Conv1d(128, 256, kernel_size=18, padding=4),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(256, 512, 10, padding=1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(10) 
+            nn.MaxPool1d(4), # len -> len/64
         )
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=512, nhead=8, dim_feedforward=1024),
-            num_layers=3
+        
+        # Con una entrada de 1024, la longitud de la secuencia de salida de la CNN sería:
+        # 1024 / (2*2*4*4) = 1024 / 64 ≈ 16 -> carac_len
+        # El número de características (canales) es 256.
+        # Así que la salida de la CNN es [batch, 256, carac_len]
+
+        # 2. Componentes del Transformer
+        d_model = 256  # El tamaño de la característica debe coincidir con los canales de la CNN
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model)) # Token [CLS]
+
+        self.pos_encoder = PositionalEncoding(d_model=d_model, dropout=0.1, max_len=513) # max_len > carac_len
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, 
+            nhead=8, # 8 cabezales de atención
+            dim_feedforward=512, # Capa feedforward más pequeña
+            dropout=0.2,
+            batch_first=True  # ¡Muy importante para manejar las dimensiones fácilmente!
         )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+
+        # 3. Clasificador final
+        
         self.classifier = nn.Sequential(
-            nn.Linear(1024, 512),
+            nn.Linear(256, 128), # d_model es 256
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 1)
+            nn.Dropout(0.4),
+            nn.Linear(128, 1)
         )
 
     def forward(self, x):
-        cnn_features = self.cnn(x)  # [batch, 512, 10]
-        transformer_in = cnn_features.permute(0, 2, 1)  # [batch, 10, 512]
-        attn_output = self.transformer(transformer_in).mean(dim=1)  # [batch, 512]
-        combined = torch.cat([cnn_features.mean(dim=2), attn_output], dim=1)  # [batch, 1024]
-        return self.classifier(combined)
+        # 1. Pasar por la CNN para obtener una secuencia de características
+        cnn_features = self.cnn(x)  # Shape: [batch, 256, seq_len_out], ej: [batch, 256, 16]
+
+        transformer_in = cnn_features.permute(0, 2, 1)
+        
+        # Añadir el token [CLS] al inicio de cada secuencia en el batch
+        batch_size = x.shape[0]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        transformer_in = torch.cat([cls_tokens, transformer_in], dim=1) # Nueva secuencia tiene longitud 17
+
+        # El positional encoding también debe poder manejar una secuencia más larga
+        transformer_in = self.pos_encoder(transformer_in) # Asegúrate que max_len en PositionalEncoding es > 17
+
+        attn_output = self.transformer(transformer_in)
+
+        # 5. Selecciona SOLO la salida del token [CLS] (que está en la posición 0)
+        cls_output = attn_output[:, 0] # Shape: [batch, 256]
+
+        # combined = torch.cat([cnn_features.mean(dim=2), aggregated_features], dim=1)
+        
+        # 6. Clasificar
+        return self.classifier(cls_output)
 
     
 class FocalLoss(nn.Module):
@@ -305,8 +355,6 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
         print("GPU Available")
     else:
         print("GPU not available")
-
-    
     # Agrupar por record
     record = df['record'].unique()
     train_patients, valtest_patients = train_test_split(
@@ -682,9 +730,9 @@ def signal_segment_to_model_input(padded_ecg, vcg=True, filter=False, normalizat
     
     # Transform to VCG
     if vcg:
-        vcg = ecg_to_vcg(filtered)
-
-    return vcg
+        filtered = ecg_to_vcg(filtered)
+   
+    return filtered
 
 
 
@@ -692,11 +740,11 @@ def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal: np.ndarray con shape [12, N]
 
     # Paso 1: Cortar o segmentar en múltiples señales de shape [12, N]
-    signal_segments = adjust_length_ecg_1024(all_lead_signal) #  Lista de arrays [12, N]
+    signal_segments = adjust_length_ecg_2048(all_lead_signal) #  Lista de arrays [12, N]
 
     # Paso 2: Convertir cada segmento a VCG (u otra representación)
     processed_segments = [
-       signal_segment_to_model_input(segment, vcg = True, filter=False, normalization='normalize')
+       signal_segment_to_model_input(segment, vcg = False, filter=False, normalization='normalize')
         for segment in signal_segments
     ]
     
