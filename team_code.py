@@ -32,7 +32,11 @@ from scipy.signal import resample_poly
 
 
 PROB_THRESHOLD = 0.6
+
 BATCH_SIZE = 128
+VCG_TRANSFORM = True
+INPUT_CHANNELS = 3 if VCG_TRANSFORM else 12
+SEGMENTS_LENGTH = 1024  # Cambia a 2048 si quieres usar segmentos de 2048 muestras
 
 ################################################################################
 #
@@ -242,7 +246,7 @@ class ChagasClassifier(nn.Module):
         
         # 1. Extractor de características CNN
         self.cnn = nn.Sequential(
-            nn.Conv1d(12, 32, kernel_size=18, padding=4),
+            nn.Conv1d(INPUT_CHANNELS, 32, kernel_size=18, padding=4),
             nn.BatchNorm1d(32),
             nn.ReLU(),
             nn.MaxPool1d(2), # len -> len/2
@@ -281,7 +285,6 @@ class ChagasClassifier(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
         # 3. Clasificador final
-        
         self.classifier = nn.Sequential(
             nn.Linear(256, 128), # d_model es 256
             nn.ReLU(),
@@ -335,7 +338,7 @@ class FocalLoss(nn.Module):
 
 ################################################################################
 #
-# TODO Arquitecura del modelo
+# TODO Entrenamiento del modelo
 #
 ################################################################################
 
@@ -391,7 +394,7 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
     
     model = ChagasClassifier().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
 
     pos_count = np.sum(y_train == 1)
     neg_count = np.sum(y_train == 0)
@@ -474,8 +477,8 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
                 print("Early stopping triggered")
                 break
         
-        # Ajustar el learning rate basado en el challenge_score de validación
-        scheduler.step(val_challenge_score)
+        # # Ajustar el learning rate basado en el challenge_score de validación
+        # scheduler.step(val_challenge_score)
         
         # Detección de overfitting
         if train_challenge_score - val_challenge_score > 0.1 or train_auprc - val_auprc > 0.06:  # Umbral arbitrario para detectar overfitting
@@ -551,6 +554,7 @@ def adjust_length_ecg_2048(arr):
         if length < target_length:
             # signal1 = Zero_pad_leads(arr,target_length=2048)
             break
+            
 
         elif length > 1.5*target_length: # Its bigger than target but not double, overlapping
             signal1[:, col] = col_data[:target_length] # Take the first target_length
@@ -580,8 +584,8 @@ def adjust_length_ecg_1024(arr):
         length = len(col_data)
         
         if length < target_length:
-            # signal1 = Zero_pad_leads(arr,target_length=1024)
-            break
+        #    signal1 = Zero_pad_leads(arr,target_length=1024)
+           break
 
         elif length >= 4*target_length: # If its bigger than two times we do two splits
             signal1[:, col] = col_data[:target_length]
@@ -698,7 +702,7 @@ def ecg_to_vcg(ecg, tr='dower'):
     # Concatenar ecg_1 y ecg_2 a lo largo del eje 2 (columnas)
     ecg_red = np.concatenate([ecg_1, ecg_2], axis=1)
 
-    ecg_red = np.transpose(ecg_red,(1,0) )
+    ecg_red = np.transpose(ecg_red,(1,0))
 
 
     # Realizar la multiplicación matricial
@@ -740,11 +744,14 @@ def preprocess_12_lead_signal(all_lead_signal):
     # all_lead_signal: np.ndarray con shape [12, N]
 
     # Paso 1: Cortar o segmentar en múltiples señales de shape [12, N]
-    signal_segments = adjust_length_ecg_2048(all_lead_signal) #  Lista de arrays [12, N]
+    if SEGMENTS_LENGTH == 2048:
+        signal_segments = adjust_length_ecg_2048(all_lead_signal) #  Lista de arrays [12, N]
+    elif SEGMENTS_LENGTH == 1024:
+        signal_segments = adjust_length_ecg_1024(all_lead_signal)
 
     # Paso 2: Convertir cada segmento a VCG (u otra representación)
     processed_segments = [
-       signal_segment_to_model_input(segment, vcg = False, filter=False, normalization='normalize')
+       signal_segment_to_model_input(segment, vcg = VCG_TRANSFORM, filter=False, normalization='normalize')
         for segment in signal_segments
     ]
     
