@@ -34,7 +34,7 @@ from scipy.signal import resample_poly
 PROB_THRESHOLD = 0.6
 
 BATCH_SIZE = 128
-VCG_TRANSFORM = True
+VCG_TRANSFORM = False
 INPUT_CHANNELS = 3 if VCG_TRANSFORM else 12
 SEGMENTS_LENGTH = 1024  # Cambia a 2048 si quieres usar segmentos de 2048 muestras
 
@@ -115,10 +115,7 @@ def train_model(data_folder, model_folder, verbose):
         sampling_frequency = get_sampling_frequency(load_header(record))
         source = load_source(record)
 
-        if sampling_frequency != 400:
-            signal = resample_poly(signal, 400, sampling_frequency, axis=0)
-
-        processed_signals = preprocess_12_lead_signal(signal) 
+        processed_signals = preprocess_12_lead_signal(signal,sampling_frequency, source) 
         
         # Añadir una entrada por cada señal procesada
         for j, processed_signal in enumerate(processed_signals):
@@ -166,8 +163,12 @@ def run_model(record, model, verbose):
 
     signal_data = load_signals(record)
     signal = signal_data[0]
-    signal_segments = preprocess_12_lead_signal(signal)
 
+    source = load_source(record)
+    sampling_frequency = get_sampling_frequency(load_header(record))
+
+    signal_segments = preprocess_12_lead_signal(signal,sampling_frequency, source)
+                                    
     segments_tensor = np.stack(signal_segments)
     labels = np.repeat(label, len(signal_segments))
 
@@ -191,6 +192,41 @@ def run_model(record, model, verbose):
     binary_output = probability_output > PROB_THRESHOLD
 
     return binary_output, probability_output
+
+
+# def run_model(record, model, verbose):
+#     signal_data = load_signals(record)
+#     signal = signal_data[0]
+    
+#     source = load_source(record)
+#     sampling_frequency = get_sampling_frequency(load_header(record))
+
+#     signal = standardize_ecg_signal(signal, sampling_frequency,source)
+         
+#     TMD = calculate_tmd_from_raw_ecg(signal.T, 400)
+
+
+#     # # Nombres reales de las 12 derivaciones estándar
+#     # lead_names = ["I", "II", "III", "aVR", "aVL", "aVF",
+#     #             "V1", "V2", "V3", "V4", "V5", "V6"]
+#     # # Crear DataFrame
+#     # df = pd.DataFrame(signal, columns=lead_names)
+#     # # Formatear el nombre del archivo con TMD
+#     # tmd_str = f"{TMD:.2f}"
+#     # record = record.split('/')[-1] 
+#     # filename = f"{source}_{record}_TMD_{tmd_str}.csv"
+#     # print(filename)
+#     # output_dir = "/home/jamon/alejandropm/PhysioNet_Challenge/PhysioNet_Challenge_2025-EPBandoleroLab/Prueba"
+#     # output_path = os.path.join(output_dir, filename)
+#     # print(output_path)
+#     # # Guardar
+#     # df.to_csv(output_path, index=False)
+
+
+#     binary_output = 1 if TMD > 0.5 else 0
+#     probability_output = TMD
+
+#     return binary_output, probability_output
 
 
 ################################################################################
@@ -230,14 +266,17 @@ class PositionalEncoding(nn.Module):
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
+        
+        # Cambio clave: solo añade una dimensión de batch al principio.
+        # pe tiene forma [max_len, d_model] -> [1, max_len, d_model]
+        pe = pe.unsqueeze(0) 
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # x tiene shape [seq_len, batch_size, d_model] en el modo por defecto del transformer
-        # o [batch_size, seq_len, d_model] si batch_first=True
-        # Asumiremos batch_first=True para que sea más intuitivo
-        x = x + self.pe[:x.size(1), :].squeeze(1) # Adaptado para batch_first=True
+        # x tiene forma [batch_size, seq_len, d_model]
+        # self.pe tiene forma [1, max_len, d_model]
+        # El slicing selecciona las posiciones correctas y broadcasting se encarga del resto.
+        x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
 
 class ChagasClassifier(nn.Module):
@@ -277,8 +316,8 @@ class ChagasClassifier(nn.Module):
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, 
-            nhead=8, # 8 cabezales de atención
-            dim_feedforward=512, # Capa feedforward más pequeña
+            nhead=16, # 8 cabezales de atención
+            dim_feedforward=1024, # Capa feedforward más pequeña
             dropout=0.2,
             batch_first=True  # ¡Muy importante para manejar las dimensiones fácilmente!
         )
@@ -310,9 +349,6 @@ class ChagasClassifier(nn.Module):
 
         # 5. Selecciona SOLO la salida del token [CLS] (que está en la posición 0)
         cls_output = attn_output[:, 0] # Shape: [batch, 256]
-
-        # combined = torch.cat([cnn_features.mean(dim=2), aggregated_features], dim=1)
-        
         # 6. Clasificar
         return self.classifier(cls_output)
 
@@ -331,11 +367,16 @@ class FocalLoss(nn.Module):
         BCE_loss = self.bce_loss(inputs, targets)
         # Calcular pt (probabilidad de la clase correcta)
         pt = torch.exp(-BCE_loss)
-        # Aplicar Focal Loss
-        F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
-        return F_loss.mean()
-    
 
+        # Cálculo del factor alpha dinámico
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+
+        # Aplicar Focal Loss
+        # F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
+        F_loss = alpha_t * (1 - pt) ** self.gamma * BCE_loss
+        return F_loss.mean()
+
+    
 ################################################################################
 #
 # TODO Entrenamiento del modelo
@@ -401,7 +442,7 @@ def train_and_save_model(df, model_folder,obtain_test_metrics):
     pos_weight = neg_count / pos_count
 
     pos_weight = torch.tensor([pos_weight], device=device)  
-    # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    # criterion = nn.BCEWithLogitsLoss()
     criterion = FocalLoss(pos_weight, alpha=0.7, gamma=1.0)
     
     best_challenge_score = 0
@@ -682,81 +723,144 @@ def adjust_length_ecg_1024(arr):
 
 # VCG to ECG
 def ecg_to_vcg(ecg, tr='dower'):
-    # Dimensiones ECG (input):   (5000, 12)
-    # Dimensiones VCG (output):   (1000, 3)
+    """
+    Convierte una señal de ECG de 12 derivaciones en una representación VCG de 3 canales 
+    usando la transformación de Dower o Kors.
+
+    Parameters
+    ----------
+    ecg : np.ndarray
+        Array de forma (N, 12) donde N es el número de muestras y 12 las derivaciones del ECG.
+    tr : str, optional
+        Tipo de transformación a utilizar: 'dower' (por defecto) o 'kors'.
+
+    Returns
+    -------
+    vcg : np.ndarray
+        Array transformado de forma (N, 3) correspondiente a las componentes X, Y, Z del VCG.
+    """
     if tr == 'dower':
         T = np.array([[-0.172, -0.074,  0.122,  0.231, 0.239, 0.194,  0.156, -0.010],
-                    [0.057,  -0.019, -0.106, -0.022, 0.041, 0.048, -0.227,  0.887],
-                    [-0.229,  -0.310, -0.246, -0.063, 0.055, 0.108,  0.022,  0.102]])
-    if tr == 'kors':
-        T = np.array([[ -0.13, 0.05, -0.01, 0.14, 0.06, 0.54, 0.38, -0.07],
-                      [0.06, -0.02, -0.05, 0.06, -0.17, 0.13, -0.07, 0.93],
-                      [-0.43, -0.06, -0.14, -0.20, -0.11, 0.31, 0.11, -0.23]])
-    # Seleccionar las columnas apropiadas para ecg_1 y ecg_2
-    #ecg = np.transpose(ecg, (0,2,1))
-    ecg_1 = ecg[:, 6:]
-    ecg_2 = ecg[:, :2]
+                      [ 0.057, -0.019, -0.106, -0.022, 0.041, 0.048, -0.227,  0.887],
+                      [-0.229, -0.310, -0.246, -0.063, 0.055, 0.108,  0.022,  0.102]])
+    elif tr == 'kors':
+        T = np.array([[-0.13, 0.05, -0.01, 0.14, 0.06, 0.54, 0.38, -0.07],
+                      [ 0.06, -0.02, -0.05, 0.06, -0.17, 0.13, -0.07,  0.93],
+                      [-0.43, -0.06, -0.14, -0.20, -0.11, 0.31,  0.11, -0.23]])
+    
+    ecg_1 = ecg[:, 6:]  # Derivaciones V1-V6
+    ecg_2 = ecg[:, :2]  # Derivaciones I y II
+    ecg_red = np.concatenate([ecg_1, ecg_2], axis=1)  # Reordenar derivaciones
 
-   
-
-    # Concatenar ecg_1 y ecg_2 a lo largo del eje 2 (columnas)
-    ecg_red = np.concatenate([ecg_1, ecg_2], axis=1)
-
-    ecg_red = np.transpose(ecg_red,(1,0))
-
-
-    # Realizar la multiplicación matricial
-    vcg = np.matmul(T, ecg_red)
-
-    vcg = np.transpose(vcg, (1, 0))  # Transpose to match expected output shape (3, 4096)
+    ecg_red = ecg_red.T  # Transposición para multiplicación matricial
+    vcg = np.matmul(T, ecg_red).T  # Transformación y transposición final
 
     return vcg
 
 
+def standardize_ecg_signal(signal: np.ndarray, sampling_frequency: int, source: str) -> np.ndarray:
+    """
+    Estandariza una señal de ECG a 12 derivaciones, ajustando el orden de las derivaciones
+    y la frecuencia de muestreo a 400 Hz.
 
-def signal_segment_to_model_input(padded_ecg, vcg=True, filter=False, normalization = 'normalize'):
+    Parameters
+    ----------
+    signal : np.ndarray
+        Señal ECG con forma (N, 12), donde N es el número de muestras.
+    sampling_frequency : int
+        Frecuencia de muestreo original de la señal.
+    source : str
+        Nombre de la base de datos fuente (ej. 'PTB-XL', 'SamiTrop', 'Code-15').
+
+    Returns
+    -------
+    np.ndarray
+        Señal ECG con derivaciones ordenadas y muestreada a 400 Hz.
+    """
+    if source == "PTB-XL":
+        # Intercambiar aVR y aVL para que coincidan con el orden estándar
+        signal[3, :], signal[4, :] = signal[4, :].copy(), signal[3, :].copy()
+
+    if sampling_frequency != 400:
+        signal = resample_poly(signal, 400, sampling_frequency, axis=0)
+
+    return signal
+
+
+def signal_segment_to_model_input(padded_ecg, vcg=True, filter=False, normalization='normalize'):
+    """
+    Procesa un segmento de señal ECG aplicando filtrado, normalización y transformación opcional a VCG.
+
+    Parameters
+    ----------
+    padded_ecg : np.ndarray
+        Segmento ECG de forma (N, 12).
+    vcg : bool, optional
+        Si True, convierte la señal a representación VCG. Por defecto es True.
+    filter : bool, optional
+        Si True, aplica un filtro. Por defecto es False.
+    normalization : str, optional
+        Método de normalización: 'normalize' (media 0, varianza 1) o 'center' (solo media 0).
+
+    Returns
+    -------
+    np.ndarray
+        Segmento procesado, ya sea como ECG (N, 12) o VCG (N, 3).
+    """
     if filter:
-        # Initialize filtered signal container
+        # Placeholder para un filtro real
         filtered = np.zeros_like(padded_ecg)
-        # Filter
         for lead_idx in range(padded_ecg.shape[1]):
-            filtered[:, lead_idx] = filtered[:, lead_idx]  # wavelet_ecg_filter(signal = padded_ecg[:, lead_idx])
+            filtered[:, lead_idx] = filtered[:, lead_idx]  # Sustituir por filtro real
     else:
         filtered = padded_ecg
-    
-    # Normalize or center before VCG, to preserve spatial relations in VCG
+
     if normalization == 'normalize':
         filtered = (filtered - filtered.mean(axis=0)) / (filtered.std(axis=0) + 1e-8)
-        # filtered = filtered / (np.abs(filtered).max() + 1e-8)
+    elif normalization == 'center':
+        filtered = filtered - filtered.mean(axis=0)
 
-    if normalization == 'center':
-        filtered = (filtered - filtered.mean(axis=0))
-    
-    # Transform to VCG
     if vcg:
         filtered = ecg_to_vcg(filtered)
-   
+
     return filtered
 
 
+def preprocess_12_lead_signal(all_lead_signal, sampling_frequency, source):
+    """
+    Preprocesa una señal ECG de 12 derivaciones: estandariza frecuencia y orden, 
+    la segmenta y la convierte a VCG si se desea.
 
-def preprocess_12_lead_signal(all_lead_signal):
-    # all_lead_signal: np.ndarray con shape [12, N]
+    Parameters
+    ----------
+    all_lead_signal : np.ndarray
+        Señal ECG completa de forma (N, 12), donde N es el número de muestras.
+    sampling_frequency : int
+        Frecuencia de muestreo original de la señal.
+    source : str
+        Nombre de la base de datos fuente (ej. 'PTB-XL', 'SamiTrop', 'Code-15').
 
-    # Paso 1: Cortar o segmentar en múltiples señales de shape [12, N]
+    Returns
+    -------
+    list of np.ndarray
+        Lista de segmentos (N,12) procesados, transformados según configuración.
+    """
+    # Paso 0: Estandarizar señal
+    all_lead_signal = standardize_ecg_signal(all_lead_signal, sampling_frequency, source)
+
+    # Paso 1: Segmentar según longitud deseada
     if SEGMENTS_LENGTH == 2048:
-        signal_segments = adjust_length_ecg_2048(all_lead_signal) #  Lista de arrays [12, N]
+        signal_segments = adjust_length_ecg_2048(all_lead_signal)
     elif SEGMENTS_LENGTH == 1024:
         signal_segments = adjust_length_ecg_1024(all_lead_signal)
 
-    # Paso 2: Convertir cada segmento a VCG (u otra representación)
+
+    # Paso 2: Procesar cada segmento (VCG, normalización, etc.)
     processed_segments = [
-       signal_segment_to_model_input(segment, vcg = VCG_TRANSFORM, filter=False, normalization='normalize')
+        signal_segment_to_model_input(segment, vcg=VCG_TRANSFORM, filter=False, normalization='normalize')
         for segment in signal_segments
     ]
-    
-
-    return processed_segments  # Lista de arrays transformados
+    return processed_segments
 
 ################################################################################
 #
@@ -854,6 +958,283 @@ def obtain_balanced_train_dataset(path, negative_to_positive_ratio=1.0):
     
     # Devolver la lista completa de registros seleccionados
     return positive_records + selected_negatives
+
+################################################################################
+#
+# TODO TMD
+#
+################################################################################
+
+
+# import numpy as np
+# from scipy.signal import butter, lfilter, find_peaks
+# from scipy.ndimage import median_filter
+
+# def _filter_ecg(data, sampling_rate, low_cutoff=0.5, high_cutoff=40.0, order=4):
+#     """
+#     Aplica filtros paso bajo y paso alto al ECG.
+#     Equivalente a la lógica de filtrado en BRAVEHEART.
+#     """
+#     nyquist = 0.5 * sampling_rate
+    
+#     # Filtro paso alto (para deriva de línea de base)
+#     b_high, a_high = butter(order, low_cutoff / nyquist, btype='high')
+#     filtered_data = lfilter(b_high, a_high, data, axis=1)
+    
+#     # Filtro paso bajo (para ruido de alta frecuencia)
+#     b_low, a_low = butter(order, high_cutoff / nyquist, btype='low')
+#     filtered_data = lfilter(b_low, a_low, filtered_data, axis=1)
+    
+#     return filtered_data
+
+# def _ecg_to_vcg(ecg_leads):
+#     """
+#     Transforma 8 derivaciones de ECG a VCG usando la matriz de Kors.
+#     """
+#     # Matriz de Kors
+#     K = np.array([
+#         [-0.13,  0.05, -0.01,  0.14,  0.06,  0.54,  0.38, -0.07],
+#         [ 0.06, -0.02, -0.05,  0.06, -0.17,  0.13, -0.07,  0.93],
+#         [-0.43, -0.06, -0.14, -0.20, -0.11,  0.31,  0.11, -0.23]
+#     ])
+    
+#     # Las derivaciones deben estar en el orden: I, II, V1, V2, V3, V4, V5, V6
+#     E = np.vstack([
+#         ecg_leads['I'], ecg_leads['II'], ecg_leads['V1'], ecg_leads['V2'],
+#         ecg_leads['V3'], ecg_leads['V4'], ecg_leads['V5'], ecg_leads['V6']
+#     ])
+    
+#     vcg = K @ E
+#     X, Y, Z = vcg[0, :], vcg[1, :], vcg[2, :]
+#     VM = np.sqrt(X**2 + Y**2 + Z**2)
+    
+#     return {'X': X, 'Y': Y, 'Z': Z, 'VM': VM}
+
+# def _find_r_peaks(vm_signal, sampling_rate):
+#     """
+#     Encuentra los picos R en la señal de magnitud del vector.
+#     """
+#     # Umbral al percentil 95, como en BRAVEHEART
+#     height_threshold = np.percentile(vm_signal, 95)
+#     # Distancia mínima basada en una FCM máxima de 180 lpm
+#     min_peak_distance = (60 / 180) * sampling_rate
+    
+#     peaks, _ = find_peaks(vm_signal, height=height_threshold, distance=min_peak_distance)
+#     return peaks
+
+# def _annotate_single_beat(vm_signal, r_peak, sampling_rate):
+#     """
+#     Anota un único latido (Q, S, T, Tend) a partir de su señal de VM y pico R.
+#     Esta es una versión simplificada de la lógica de annoMF.m.
+#     """
+#     # Estimar ancho de QRS usando un filtro de mediana
+#     mf_length = int(0.04 * sampling_rate) # filtro de 40ms
+#     if mf_length % 2 == 0: mf_length += 1
+    
+#     smoothed_vm = median_filter(vm_signal, size=mf_length)
+#     peak_val = smoothed_vm[r_peak]
+#     width_threshold = 0.20 * peak_val
+
+#     # Búsqueda de inicio y fin del QRS
+#     qrs_search_win_ms = 100 # 100ms antes y después del R
+#     search_radius = int(qrs_search_win_ms / 1000 * sampling_rate)
+    
+#     start_search = max(0, r_peak - search_radius)
+#     end_search = min(len(smoothed_vm), r_peak + search_radius)
+
+#     crossings_start = np.where(smoothed_vm[start_search:r_peak] < width_threshold)[0]
+#     q_point = start_search + crossings_start[-1] + 1 if len(crossings_start) > 0 else start_search
+    
+#     crossings_end = np.where(smoothed_vm[r_peak:end_search] < width_threshold)[0]
+#     s_point = r_peak + crossings_end[0] if len(crossings_end) > 0 else end_search
+
+#     # Búsqueda de la onda T
+#     st_start_ms = 100 # 100ms después del fin del QRS
+#     t_win_start = s_point + int(st_start_ms / 1000 * sampling_rate)
+    
+#     # La ventana de búsqueda de T finaliza 45% del intervalo RR estimado (asumiendo 60 lpm por defecto)
+#     rr_interval_est = int(sampling_rate) 
+#     t_win_end = min(len(vm_signal), t_win_start + int(0.45 * rr_interval_est))
+
+#     if t_win_start >= t_win_end:
+#         return q_point, s_point, s_point, t_win_end
+
+#     # Encontrar el pico de la onda T
+#     t_segment = vm_signal[t_win_start:t_win_end]
+#     if len(t_segment) == 0:
+#         return q_point, s_point, s_point, t_win_end
+        
+#     t_peak_relative = np.argmax(t_segment)
+#     t_peak = t_win_start + t_peak_relative
+
+#     # Encontrar fin de T con el método de energía
+#     vm_derivative = np.gradient(vm_signal)
+#     energy_segment = vm_signal[t_peak:t_win_end]
+#     energy_derivative_segment = vm_derivative[t_peak:t_win_end]
+    
+#     energy_signal = np.zeros_like(energy_segment)
+#     for i in range(1, len(energy_signal)):
+#         if energy_derivative_segment[i] < 0:
+#             energy_signal[i] = energy_signal[i-1] - energy_segment[i]
+#         else:
+#             energy_signal[i] = energy_signal[i-1] + energy_segment[i]
+            
+#     tend_relative = np.argmin(energy_signal) if len(energy_signal) > 0 else len(energy_segment) - 1
+#     tend_point = t_peak + tend_relative
+    
+#     return q_point, s_point, t_peak, tend_point
+
+# def _create_median_beat(ecg_data, r_peaks, sampling_rate):
+#     """
+#     Crea un latido mediano alineando todos los latidos por sus picos R.
+#     """
+#     window_before = int(0.2 * sampling_rate) # 200ms
+#     window_after = int(0.6 * sampling_rate)  # 600ms
+#     beat_length = window_before + window_after
+    
+#     num_beats = len(r_peaks)
+#     num_leads = ecg_data.shape[0]
+    
+#     beat_stack = np.zeros((num_beats, num_leads, beat_length))
+#     beat_stack[:] = np.nan
+    
+#     valid_beats = 0
+#     for i, r_peak in enumerate(r_peaks):
+#         start = r_peak - window_before
+#         end = r_peak + window_after
+        
+#         if start >= 0 and end < ecg_data.shape[1]:
+#             beat_stack[i, :, :] = ecg_data[:, start:end]
+#             valid_beats += 1
+            
+#     if valid_beats < 3: # Se necesitan al menos unos pocos latidos para un mediano fiable
+#         print("Advertencia: No hay suficientes latidos válidos para crear un latido mediano.")
+#         return None
+        
+#     median_beat_data = np.nanmedian(beat_stack, axis=0)
+    
+#     # El nuevo "pico R" está en el centro de la ventana
+#     median_r_peak = window_before
+    
+#     return median_beat_data, median_r_peak
+
+# def calculate_tmd(ecg_leads, s_point, tend_point):
+#     """
+#     Calcula la Dispersión de la Morfología de la Onda T (TMD) a partir de 8 derivaciones del ECG.
+#     (Función de la respuesta anterior, ligeramente adaptada para este contexto)
+#     """
+#     required_leads = ['I', 'II', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6']
+#     if not all(lead in ecg_leads for lead in required_leads):
+#         raise ValueError(f"El diccionario 'ecg_leads' debe contener las siguientes claves: {required_leads}")
+
+#     if not (0 <= s_point < tend_point < len(ecg_leads['I'])):
+#         print("Advertencia: Los puntos fiduciales del latido mediano (s_point, tend_point) son inválidos.")
+#         return np.nan
+        
+#     X = np.array([
+#         ecg_leads['I'][s_point : tend_point + 1],
+#         ecg_leads['II'][s_point : tend_point + 1],
+#         ecg_leads['V1'][s_point : tend_point + 1],
+#         ecg_leads['V2'][s_point : tend_point + 1],
+#         ecg_leads['V3'][s_point : tend_point + 1],
+#         ecg_leads['V4'][s_point : tend_point + 1],
+#         ecg_leads['V5'][s_point : tend_point + 1],
+#         ecg_leads['V6'][s_point : tend_point + 1]
+#     ])
+
+#     if X.shape[1] < 2: # Se necesita al menos 2 puntos para SVD
+#         print("Advertencia: El segmento de la onda T es demasiado corto para el análisis.")
+#         return np.nan
+
+#     try:
+#         U, s, Vt = np.linalg.svd(X, full_matrices=False)
+#     except np.linalg.LinAlgError:
+#         print("Error: La descomposición SVD falló.")
+#         return np.nan
+        
+#     Ut = U[:, :2]
+#     S_diag = np.diag(s[:2])
+#     W = (Ut @ S_diag).T
+#     W = np.delete(W, 2, axis=1)
+
+#     num_leads_remaining = W.shape[1]
+#     angle_matrix = np.zeros((num_leads_remaining, num_leads_remaining))
+
+#     for i in range(num_leads_remaining):
+#         for j in range(i + 1, num_leads_remaining):
+#             wi = W[:, i]
+#             wj = W[:, j]
+            
+#             dot_product = np.dot(wi, wj)
+#             norm_product = np.linalg.norm(wi) * np.linalg.norm(wj)
+            
+#             # Evitar división por cero si una derivación es plana
+#             if norm_product == 0:
+#                 angle_rad = np.pi / 2 # 90 grados si son ortogonales
+#             else:
+#                 # Acos es más estable para este cálculo de ángulo
+#                 cos_angle = dot_product / norm_product
+#                 angle_rad = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+            
+#             angle_matrix[i, j] = np.degrees(angle_rad)
+
+#     upper_triangle_angles = angle_matrix[np.triu_indices(num_leads_remaining, k=1)]
+    
+#     return np.mean(upper_triangle_angles) if len(upper_triangle_angles) > 0 else 0.0
+
+# def calculate_tmd_from_raw_ecg(ecg_data, sampling_rate):
+#     """
+#     Función principal que calcula el TMD a partir de datos brutos de un ECG de 12 derivaciones.
+
+#     Parámetros:
+#     ----------
+#     ecg_data : np.array
+#         Un array de NumPy de forma (12, N) con los datos del ECG.
+#         El orden de las derivaciones debe ser: I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6.
+#     sampling_rate : int
+#         La frecuencia de muestreo del ECG en Hz.
+
+#     Devuelve:
+#     -------
+#     float
+#         El valor del TMD calculado en grados, o np.nan si el cálculo no fue posible.
+#     """
+#     if ecg_data.shape[0] != 12:
+#         raise ValueError("La entrada 'ecg_data' debe tener 12 filas (derivaciones).")
+
+#     # 1. Filtrar el ECG
+#     filtered_ecg_data = _filter_ecg(ecg_data, sampling_rate)
+    
+#     lead_names = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6']
+#     filtered_ecg_dict = {name: filtered_ecg_data[i] for i, name in enumerate(lead_names)}
+
+#     # 2. Transformar a VCG y obtener VM
+#     vcg_dict = _ecg_to_vcg(filtered_ecg_dict)
+    
+#     # 3. Encontrar picos R
+#     r_peaks = _find_r_peaks(vcg_dict['VM'], sampling_rate)
+#     if len(r_peaks) < 3:
+#         print("Advertencia: Se detectaron menos de 3 latidos, no se puede continuar.")
+#         return np.nan
+        
+#     # 4. Crear latido mediano
+#     median_beat_tuple = _create_median_beat(filtered_ecg_data, r_peaks, sampling_rate)
+#     if median_beat_tuple is None:
+#         return np.nan
+#     median_beat_data, median_r_peak = median_beat_tuple
+    
+#     median_ecg_dict = {name: median_beat_data[i] for i, name in enumerate(lead_names)}
+    
+#     # 5. Anotar el latido mediano para obtener los puntos fiduciales finales
+#     median_vcg = _ecg_to_vcg(median_ecg_dict)
+#     _, s_point, _, tend_point = _annotate_single_beat(median_vcg['VM'], median_r_peak, sampling_rate)
+
+#     # 6. Calcular el TMD usando los datos del latido mediano y sus fiduciales
+#     tmd_value = calculate_tmd(median_ecg_dict, s_point, tend_point)
+
+#     return tmd_value
+
+
 
 
 
