@@ -665,59 +665,55 @@ def adjust_length_ecg_1024(arr):
 
 
 # Filtering function
-# import pywt # Wavelet package
-# def wavelet_ecg_filter(signal, wavelet='db4', mode='symmetric', 
-#                    remove_approx=True, remove_details=[8,7]):
+from scipy.signal import medfilt 
+import pywt 
 
-#     # Use in chagas code -> filtered_ecg_signal = waveltet_filter(ecg_signal)
-#     # INPUT: Lead signal (2048, 1)
-#     # OUTPUT: Filtered lead signal (2048,1)
-#     # Removes baseline wander and high frequency noise preserving the morphology 
-#     #   using wavelet decomposition
+def remove_baseline_wander(signal, factor=101):
+    # Apply median filter
+    y = medfilt(signal, kernel_size=factor)
+    # Subtract baseline wander
+    filt_signal = signal - y
+    return filt_signal
 
-#     """
-#     Parameters:
-#     -----------
-#     signal : array-like
-#         Input signal to process
-#     wavelet : str, optional
-#         Wavelet to use (default: 'db4')
-#     mode : str, optional
-#         Signal extension mode (default: 'symmetric')
-#     remove_approx : bool, optional
-#         Whether to remove the approximation coefficients (default: True)
-#     remove_details : list or None, optional
-#         Which detail levels to remove (e.g., [1,2] removes D1 and D2) (default: [8,7])
-#     plot_Flag: bool, optional
-#         Whether to plot the components (default: False)
-#     figsize : tuple, optional
-#         Figure size (default: (30, 5))
-        
-#     """
-#     # Perform wavelet decomposition
-#     coeffs = pywt.wavedec(signal, wavelet=wavelet, mode=mode, level=8)
-#     levels = len(coeffs) - 1
+
+def wavelet_filter(senal_entrada, wavelet='coif4', nivel=7):
+
+    # Sacada de un libro de procesamiento de electrocardiogramas
+
+    """
+    Filtra una señal utilizando transformada Wavelet.
+
+    Parámetros:
+        senal_entrada (array-like): Señal de entrada a filtrar.
+        wavelet (str): Familia de wavelet a usar (por defecto 'coif4').
+        nivel (int): Número de niveles de descomposición (por defecto 7).
     
-#     # Initialize dictionary to store components
-#     components = {}
+    Retorna:
+        senal_filtrada (numpy array): Señal filtrada reconstruida.
+    """
+    # Descomponer la señal usando wavelet y niveles especificados
+    coeficientes = pywt.wavedec(senal_entrada, wavelet, level=nivel)
     
-#     # Create modified coefficients for filtering
-#     filtered_coeffs = [c.copy() for c in coeffs]
+    # Filtrado: Eliminamos los detalles (coeficientes 'd') manteniendo aproximaciones ('a')
+    # Nota: Esto corresponde al componente de baja frecuencia.
+    for i in range(1, len(coeficientes)):
+        coeficientes[i] = np.zeros_like(coeficientes[i])
     
-#     # Remove specified components
-#     if remove_approx:
-#         filtered_coeffs[0] = np.zeros_like(filtered_coeffs[0])
+    # Reconstrucción de la señal
+    senal_filtrada = pywt.waverec(coeficientes, wavelet)
     
-#     if remove_details is not None:
-#         for level in remove_details:
-#             if 1 <= level <= levels:
-#                 filtered_coeffs[level] = np.zeros_like(filtered_coeffs[level])
+    # Ajustar la longitud en caso de que haya cambiado
+    senal_filtrada = senal_filtrada[:len(senal_entrada)]
     
-#     # Reconstruct filtered signal
-#     filtered_signal = pywt.waverec(filtered_coeffs, wavelet=wavelet, mode=mode)
-#     filtered_signal = filtered_signal[:len(signal)]  # Match original length
-    
-#     return filtered_signal
+   
+    return senal_filtrada
+
+
+def filter_median_wavelet(ecg_signal, factor=101, level=2, wavelet='coif4'):
+    # First remove baseline wander and then filter with wavelets
+    ecg_signal = remove_baseline_wander(signal = ecg_signal, factor = factor)
+    filtered_signal = wavelet_filter(ecg_signal, wavelet = wavelet, nivel=level)
+    return filtered_signal
 
 
 
