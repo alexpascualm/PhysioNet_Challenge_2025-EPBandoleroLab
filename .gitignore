@@ -3,3 +3,7 @@ __pycache__/
 model/
 Output/
 Test_Data/
+results/
+
+*.ipynb
+*.npy
