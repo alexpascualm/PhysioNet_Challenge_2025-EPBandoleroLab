@@ -5,6 +5,7 @@ PYTHON=python3
 
 rm -rf ./model/
 rm -rf ./Output/
+rm ecg_train_stats_for_normalization.npz
 
 # Ejecutar los scripts
 echo "Starting training..."
