@@ -161,7 +161,7 @@ def train_model(data_folder, model_folder, verbose):
     # Create a folder for the model if it does not already exist.
     os.makedirs(model_folder, exist_ok=True)
 
-    train_and_save_model(train_df,model_folder,obtain_test_metrics=True, learning_rate=LR, lead_dropout=LEAD_DROPOUT, cnn_kernel_size=CNN_KERNEL_SIZE , transformer_n_head=TRANSFORMER_N_HEAD, transformer_dim_feedforward=TRANSFORMER_DIM_FEEDFORWARD,
+    train_and_save_model(train_df,model_folder,obtain_test_metrics=False, learning_rate=LR, lead_dropout=LEAD_DROPOUT, cnn_kernel_size=CNN_KERNEL_SIZE , transformer_n_head=TRANSFORMER_N_HEAD, transformer_dim_feedforward=TRANSFORMER_DIM_FEEDFORWARD,
                           transformer_dropout=TRANSFORMER_DROPOUT, transformer_num_layers=TRANSFORMER_NUM_LAYERS, fcnn_dropout=FCNN_DROPOUT, weight_decay=WEIGHT_DECAY, alpha=ALPHA, gamma=GAMMA)
     
     if verbose:
