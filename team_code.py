@@ -33,7 +33,7 @@ PROB_THRESHOLD=0.6
 BATCH_SIZE=128
 VCG_TRANSFORM=False
 INPUT_CHANNELS=3 if VCG_TRANSFORM else 12
-SEGMENTS_LENGTH=1024  # Cambia a 2048 si quieres usar segmentos de 2048 muestras
+SEGMENTS_LENGTH=1024
 
 R_RATIO=5
 
@@ -52,11 +52,11 @@ FCNN_DROPOUT=0.3
 ALPHA=0.25
 GAMMA=2.0
 
-# # Valores de normalización para la inferencia con R=1
+# # Valores de normalización para la inferencia con R_RATIO=1
 # Inference_means=[0.04075131,  0.03074186, -0.01107513, -0.03587413,  0.02576222,  0.00963566, -0.03731342, -0.0152486,  -0.00810018,  0.03289378,  0.05537905,  0.05517284] if not VCG_TRANSFORM else [0.04414546, 0.02123413, 0.02622889] 
 # Inference_stds=[0.28388433, 0.28506747, 0.27446247, 0.24950249, 0.23966872, 0.2410652, 0.3456556,  0.42599634, 0.51099372, 0.4868435,  0.47066601 ,0.42587815] if not VCG_TRANSFORM else [0.28388433, 0.28506747, 0.27446247]
 
-# Valores de normalización para la inferencia con R=5
+# Valores de normalización para la inferencia con R_RATIO=5
 Inference_means=[ 0.04516214,  0.03808608, -0.00758295, -0.04170301,  0.02613188,  0.01492094, -0.04353872, -0.01552415, -0.00413191,  0.04116291,  0.06396168, 0.06180771] if not VCG_TRANSFORM else [None, None, None] 
 Inference_stds=[0.31361437, 0.29698292, 0.29179248, 0.26847293, 0.26373582, 0.24906653, 0.36738571, 0.42411322, 0.50764618, 0.48428141, 0.48996164, 0.44913819] if not VCG_TRANSFORM else [None, None, None] 
 
@@ -254,7 +254,7 @@ def run_model(record, model, verbose):
 # Clases y funciones para la creación del dataset, del modelo, de la función de pérdida y del positional encoding.
 #
 ####################################################################################################################
-# 1. Clase Dataset con preprocesamiento
+# Clase Dataset con preprocesamiento
 class ECGDataset(Dataset):
     def __init__(self, X, y,train_leads_mean, train_leads_std, is_train=False, lead_dropout_p=0.2):
         self.X=X
@@ -560,7 +560,6 @@ def train_and_save_model(df, model_folder, obtain_test_metrics, lead_dropout=0.2
         all_outputs = torch.cat(epoch_outputs)
         all_labels = torch.cat(epoch_labels)
         all_probs = torch.sigmoid(all_outputs)
-
         epoch_train_loss = running_loss / len(train_loader.dataset)
 
         train_probs_np = all_probs.cpu().numpy()
@@ -782,7 +781,6 @@ def adjust_length_ecg_1024(arr):
     return signals
 
 
-# Filtering function
 def remove_baseline_wander(signal, factor=101):
     # Apply median filter
     y=medfilt(signal, kernel_size=factor)
