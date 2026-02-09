@@ -15,6 +15,11 @@ While the structure and format from the original example were used as a starting
 
 We hope this version serves as a useful reference for future participants.
 
+## Publication
+
+This repository accompanies our paper published in *Computing in Cardiology 2025*:
+[https://doi.org/10.22489/CinC.2025.239](https://doi.org/10.22489/CinC.2025.239)
+
 ## How do I run these scripts?
 
 First, you can download and create data for these scripts by following the [instructions](https://github.com/physionetchallenges/python-example-2025?tab=readme-ov-file#how-do-i-create-data-for-these-scripts) in the following section.
